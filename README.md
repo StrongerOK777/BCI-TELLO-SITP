@@ -97,21 +97,21 @@
 
   ### 使用指南:
 
-  修改 **spaceinvaders.py** 程序中的
+  - #### 1.修改 **spaceinvaders.py** 程序中的
 
-  ```Python
-  PORT1="COM3"
-  ```
+    ```Python
+    PORT1="COM3"
+    ```
 
-  对于Linux和Macos用户可以使用以下命令，查看自己的USB连接端口，使用其中你觉得像串口的替换上面的COM3：
+    对于Linux和Macos用户可以使用以下命令，查看自己的USB连接端口，使用其中你觉得像串口的替换上面的COM3：
 
-  ```bash
-  ls /dev/cu.*
-  ```
+    ```bash
+    ls /dev/cu.*
+    ```
 
-  在vscode终端使用python查看自己的python版本之后运行。
+  - #### 在vscode终端使用python查看自己的python版本之后运行。
 
-  当然，3.11版本运行的时候会调用**本文件夹**中的Neuropy.py程序，请务必**不要删除！**。2.7.版本中没有这方面考虑，请各位自己研究其中的原因:)。
+    当然，3.11版本运行的时候会调用**本文件夹**中的Neuropy.py程序，请务必**不要删除！** 但是2.7.版本中没有这方面考虑，请各位自己研究其中的原因:)。
 
 <a name="repo-structure"></a>
 ## 仓库文件结构
@@ -127,4 +127,3 @@
         - [spaceinvaders.py](./NeuroSky/Python3.11ver./spaceinvaders.py)
         - [diagnose_eeg.py](./NeuroSky/Python3.11ver./diagnose_eeg.py)
         - [使用说明.docx](./NeuroSky/Python3.11ver./使用说明.docx)
-
