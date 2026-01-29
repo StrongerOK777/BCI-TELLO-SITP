@@ -2,11 +2,15 @@
 
 这是一个同济大学本科生创新训练项目(SITP)。
 
-本文包含了对于脑环的测试连接，无人机的连接，使用脑环控制无人机三个部分。
+本文包含了对于脑环的基础环境配置，测试连接，无人机的连接，使用脑环控制无人机三个部分。
 
 # 目录（Contents）
+- [环境配置](#env)
+- [测试游戏使用](#spaceinvader)
+- [仓库文件结构](#repo-structure)
 
-- ### 你需要的环境：
+<a name="env"></a>
+## 你需要的环境配置：
 
   - VSCode，[下载链接](https://code.visualstudio.com)
   - VSCode插件：Python，Code Runner
@@ -81,28 +85,46 @@
     pip install requests networkx sympy
     pip install av djitellopy tellopy NeuroPy
     ```
-    - 部分库如果下载不下来可以尝试使用代理或者使用清华镜像。
+  - 部分库如果下载不下来可以尝试使用代理或者使用清华镜像。
 
     对于使用Mac的同学我推荐**使用homebrew**优先**安装pyenv**，进行方便的python版本下载和管理。（使用Mac的同学应该使用过homebrew，不知道上网搜索即可）
 
     对于之前已经使用过homebrew安装python的同学，使用pyenv安装python之后记得修改系统的编译路径，二者是完全隔离的，之前下载过的大部分库不能再次使用。
-- ### Github上已有小游戏的基本测试（Spaceinvaders）
 
-   #### 使用指南:
+<a name="spaceinvader"></a>
 
-    修改 **spaceinvaders.py** 程序中的
+## Github上已有小游戏的基本测试（Spaceinvaders）
 
-    ```Python
-    PORT1="COM3"
-    ```
+  ### 使用指南:
 
-    对于Linux和Macos用户可以使用以下命令，查看自己的USB连接端口，使用其中你觉得像串口的替换上面的COM3：
+  修改 **spaceinvaders.py** 程序中的
 
-    ```bash
-    ls /dev/cu.*
-    ```
+  ```Python
+  PORT1="COM3"
+  ```
 
-    在vscode终端使用python查看自己的python版本之后运行。
+  对于Linux和Macos用户可以使用以下命令，查看自己的USB连接端口，使用其中你觉得像串口的替换上面的COM3：
 
-    当然，3.11版本运行的时候会调用**本文件夹**中的Neuropy.py程序，请务必**不要删除！**。2.7.版本中没有这方面考虑，请各位自己研究其中的原因:)。
+  ```bash
+  ls /dev/cu.*
+  ```
+
+  在vscode终端使用python查看自己的python版本之后运行。
+
+  当然，3.11版本运行的时候会调用**本文件夹**中的Neuropy.py程序，请务必**不要删除！**。2.7.版本中没有这方面考虑，请各位自己研究其中的原因:)。
+
+<a name="repo-structure"></a>
+## 仓库文件结构
+
+- [NeuroSky/](./NeuroSky/)
+    - [Python2.7ver./](./NeuroSky/Python2.7ver./)
+        - [README.md](./NeuroSky/Python2.7ver./README.md)
+        - [spaceinvaders.py](./NeuroSky/Python2.7ver./spaceinvaders.py)
+        - [test.py](./NeuroSky/Python2.7ver./test.py)
+        - [使用说明.docx](./NeuroSky/Python2.7ver./使用说明.docx)
+    - [Python3.11ver./](./NeuroSky/Python3.11ver./)
+        - [NeuroPy.py](./NeuroSky/Python3.11ver./NeuroPy.py)
+        - [spaceinvaders.py](./NeuroSky/Python3.11ver./spaceinvaders.py)
+        - [diagnose_eeg.py](./NeuroSky/Python3.11ver./diagnose_eeg.py)
+        - [使用说明.docx](./NeuroSky/Python3.11ver./使用说明.docx)
 
