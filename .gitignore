@@ -2,3 +2,6 @@
 .csv
 .idea
 __pycache__
+data
+picture
+model

@@ -72,21 +72,21 @@ class NeuroSkyPy(object):
 
     def __init__(self, port, baudRate=57600):
         self.__port, self.__baudRate = port, baudRate
-        self.__blinkStrength_received = False
-        self.__last_blink_time = 0.0
-        self.__blink_threshold = 200
-        self.__raw_mean = 0.0
-        self.__raw_var = 1.0
-        self.__raw_alpha = 0.01
-        self.__blink_candidate_start = None
-        self.__blink_candidate_peak = 0.0
-        self.__blink_min_duration = 0.04
-        self.__blink_max_duration = 0.4
-        self.__blink_refractory = 0.5
-        self.__blink_z = 2.2
-        self.__blink_scale = 2.0
-        self.__blink_decay_tau = 0.7
-        self.__last_blink_strength_update = 0.0
+        self.__blinkStrength_received = False  # 是否收到设备原生 blinkStrength 包
+        self.__last_blink_time = 0.0  # 上一次眨眼（估算或原生）的时间戳
+        self.__blink_threshold = 200  # 眨眼幅度的基础阈值
+        self.__raw_mean = 0.0  # rawValue 的滑动均值
+        self.__raw_var = 1.0  # rawValue 的滑动方差
+        self.__raw_alpha = 0.01  # 均值/方差更新速率
+        self.__blink_candidate_start = None  # 眨眼候选起始时间
+        self.__blink_candidate_peak = 0.0  # 眨眼候选峰值幅度
+        self.__blink_min_duration = 0.04  # 眨眼最短持续时间（秒）
+        self.__blink_max_duration = 0.4  # 眨眼最长持续时间（秒）
+        self.__blink_refractory = 0.5  # 两次眨眼最小间隔（秒）
+        self.__blink_z = 2.0  # 眨眼灵敏度（越小越灵敏）
+        self.__blink_scale = 2.0  # 强度映射缩放，越大越不易到 255
+        self.__blink_decay_tau = 0.5  # 强度衰减时间常数（秒）
+        self.__last_blink_strength_update = 0.0  # 上次强度更新的时间戳
 
     def __del__(self):
         self.srl.close()
