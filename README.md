@@ -10,10 +10,12 @@
 - [测试游戏使用](#spaceinvader)
 - [仓库文件结构](#repo-structure)
 - [基于运动想象控制TELLO无人机](#MI-Control)
+- [后续计划](#future)
+- [仓库目录](#repo-structure) 
 
 <a name="env"></a>
 
-## 你需要的环境配置：
+# 你需要的环境配置（Environment）：
 
 - VSCode，[下载链接](https://code.visualstudio.com)
 - VSCode插件：Python，Code Runner
@@ -83,7 +85,7 @@
   zope.interface        8.2
   </code></pre> </details>
 
-  #### 安装命令：
+  ### 安装命令：
 
 
   ```bash
@@ -102,11 +104,11 @@
 
 <a name="spaceinvader"></a>
 
-## Github上已有小游戏的基本测试（Spaceinvaders）
+# Github上已有小游戏的基本测试（Spaceinvaders）
 
-### 使用指南:
+## 使用指南:
 
-#### 1.修改 **spaceinvaders.py** 程序中的
+### 1.修改 **spaceinvaders.py** 程序中的
 
     ``Python     PORT1="COM3"     ``
 
@@ -114,15 +116,15 @@
 
     ``bash     ls /dev/cu.*     ``
 
-#### 2.在vscode终端使用python查看自己的python版本之后运行。
+### 2.在vscode终端使用python查看自己的python版本之后运行。
 
     当然，3.11版本运行的时候会调用**本文件夹**中的Neuropy.py程序，请务必**不要删除！** 但是2.7.版本中没有这方面考虑，请各位自己研究其中的原因:)。
 
 <a name="MI-Control"></a>
 
-## 基于运动想象控制TELLO无人机
+# 基于运动想象控制TELLO无人机（Drone Control）：
 
-### 文件概况：
+## 文件概况：
 
   [KeyboardControl.py](./MI-DroneControl/KeyboardControl.py)：本使用键盘直接控制无人机移动的程序KeyboardControl.py文件。建议先使用这个程序测试成功无人机飞行状态无误后进行下一步操作。
 
@@ -136,9 +138,9 @@
 
   model/：使用[train_user.py](./MI-DroneControl/drone/train_user.py)文件训练的五种不同条件下的以及经过五种模型蒸馏得到的 **FinalModel.pth** 用户个性化模型。
 
-### 使用指南：
+## 使用指南：
 
-  - #### 1.预处理：
+  - ### 1.预处理：
   
     首先配置好所有文件的串口（这里没有做统一文件修改，很遗憾），使用[blinktest.py](./MI-DroneControl/drone/blinktest.py)文件测试连接是否正常，当稳定出现poorsignal==0的时候说明连接完美。
     
@@ -149,16 +151,20 @@
 
     读取数据阶段大约耗时210秒，若pygme窗口自动关闭，请不要关闭终端窗口，程序将在后台进行模型的建立，逐渐生成个人模型，待终端提示 ll tasks completed successfully! 即可关闭，进行测试。
   
-  - #### 2.模型自我测试：
+  - ### 2.模型自我测试：
     
     使用[predict_loop.py](./MI-DroneControl/drone/predict_loop.py)程序测试模型准确率，程序将会一直侦测当前状态，给出预测结果。算上安静状态，准确率大约在70%到80%之间。
 
-  - #### 3.无人机的飞行：
+  - ### 3.无人机的飞行：
   
     对于没有无人机或者想要虚拟测试的同学，可以使用[predic.py](./MI-DroneControl/drone/predic.py)程序进行测试，终端将会显示当前无人机行为，除了连接真实无人机部分，其他部分和[mergedrone.py](./MI-DroneControl/drone/mergedrone.py)程序一模一样，不用担心，连接无人机即可使用脑环给电脑发信号，电脑控制无人机。
 
 
 
+<a name="future"></a>
+
+# 后续计划（Future Plan）：
+  开始基于SSVEP的开发
 
 
 <a name="repo-structure"></a>
