@@ -882,9 +882,6 @@ try:
 except ImportError:
     print("Matplotlib not available, skipping visualization")
 
-print(f"\n{'='*60}")
-print("All tasks completed successfully!")
-print(f"{'='*60}")
 # ==================== 13. 知识蒸馏：合成最终模型 ====================
 print(f"\n{'='*60}")
 print("Knowledge Distillation: Creating Final Unified Model")

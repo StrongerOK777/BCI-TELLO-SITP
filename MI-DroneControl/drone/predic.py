@@ -194,6 +194,7 @@ def get_Comparision(mode):
 def drone_control(operation):
     # if(operation == "takeoff"):
     #     me.takeoff()
+    #     return
     # elif(operation == "land"):
     #     me.land()
     # elif(operation == "up"):
@@ -209,7 +210,7 @@ def drone_control(operation):
     # elif(operation == "right"):
     #     me.send_rc_control(0, 0, 0, 30)
     time.sleep(3)
-
+    return
 
 
 # try:

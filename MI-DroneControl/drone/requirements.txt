@@ -1,0 +1,7 @@
+numpy
+pygame
+torch
+pyserial
+scikit-learn
+djitellopy
+matplotlib
