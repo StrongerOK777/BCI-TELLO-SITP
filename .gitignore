@@ -4,4 +4,6 @@
 __pycache__
 data
 picture
+
+.vscode/
 model

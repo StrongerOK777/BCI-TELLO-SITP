@@ -1,54 +1,18 @@
-import os
-import time
-from neuropy import NeuroSkyPy
+#!/usr/bin/env python3
+"""Compatibility entrypoint for MindWave signal diagnostics."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
 
 
-def main():
-    port = os.getenv("MINDWAVE_PORT", "/dev/cu.usbmodem2017_2_251")
-    baud = int(os.getenv("MINDWAVE_BAUD", "57600"))
-    neuropy = NeuroSkyPy(port, baud)
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-    try:
-        neuropy.start()
-        while True:
-            attention = neuropy.attention
-            meditation = neuropy.meditation
-            blink_strength = neuropy.blinkStrength
-            poor_signal = neuropy.poorSignal
-            delta = neuropy.delta
-            theta = neuropy.theta
-            low_alpha = neuropy.lowAlpha
-            high_alpha = neuropy.highAlpha
-            low_beta = neuropy.lowBeta
-            high_beta = neuropy.highBeta
-            low_gamma = neuropy.lowGamma
-            mid_gamma = neuropy.midGamma
-            print(
-                "attention={attention} meditation={meditation} blinkStrength={blink} "
-                "poorSignal={poor} delta={delta} theta={theta} lowAlpha={la} highAlpha={ha} "
-                "lowBeta={lb} highBeta={hb} lowGamma={lg} midGamma={mg}".format(
-                    attention=attention,
-                    meditation=meditation,
-                    blink=blink_strength,
-                    poor=poor_signal,
-                    delta=delta,
-                    theta=theta,
-                    la=low_alpha,
-                    ha=high_alpha,
-                    lb=low_beta,
-                    hb=high_beta,
-                    lg=low_gamma,
-                    mg=mid_gamma,
-                )
-               
-            )
-            print("")
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        neuropy.stop()
+from bin.eeg import main_blinktest
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main_blinktest())

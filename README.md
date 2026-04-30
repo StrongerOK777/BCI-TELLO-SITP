@@ -138,6 +138,19 @@
 
   model/：使用[train_user.py](./MI-DroneControl/drone/train_user.py)文件训练的五种不同条件下的以及经过五种模型蒸馏得到的 **FinalModel.pth** 用户个性化模型。
 
+## 模块化调用：
+
+  当前仓库的可复用工具已经集中到 [bin/](./bin/) Python 包中。外部程序优先通过 import 调用这些接口，而不是复制旧脚本中的函数：
+
+  ```python
+  from bin.mi_drone_control import MIDroneController, MIDroneConfig, run_mi_drone_control
+  from bin.eeg import BrainSignalReader, EEGSnapshot, collect_rule_window, collect_feature_window, build_feature_vector
+  from bin.models import FinalUnifiedModel, load_final_model, predict_window
+  from bin.hardware import TelloDroneController, SimulatedDroneController, ArmController, CarHttpController
+  ```
+
+  旧路径下的 `mergedrone.py`、`predict_loop.py`、`blinktest.py`、车控和机械臂入口现在只作为兼容启动脚本，核心逻辑在 `bin` 包中维护。
+
 ## 使用指南：
 
   - ### 1.预处理：
