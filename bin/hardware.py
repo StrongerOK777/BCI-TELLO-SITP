@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
-from .eeg import add_sys_path
+try:
+    from .eeg import add_sys_path
+except ImportError:
+    # 支持直接运行
+    def add_sys_path(*_):
+        pass
 
 
 class DroneController(Protocol):
