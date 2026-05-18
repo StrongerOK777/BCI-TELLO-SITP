@@ -12,8 +12,6 @@ import torch.nn.functional as F
 
 
 LABELS = ["left", "right", "rest"]
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL_PATH = REPO_ROOT / "MI-DroneControl" / "model" / "FinalModel.pth"
 
 
 class FinalUnifiedModel(nn.Module):
@@ -45,15 +43,8 @@ class FinalUnifiedModel(nn.Module):
 
 def resolve_model_path(checkpoint_path: Optional[str | Path] = None) -> Path:
     if checkpoint_path is None:
-        return DEFAULT_MODEL_PATH
+        raise ValueError("checkpoint_path is required")
     path = Path(checkpoint_path).expanduser()
-    if path.is_absolute():
-        return path
-    if path.exists():
-        return path
-    drone_model_path = REPO_ROOT / "MI-DroneControl" / "model" / path
-    if drone_model_path.exists() or path.name == str(path):
-        return drone_model_path
     return path
 
 

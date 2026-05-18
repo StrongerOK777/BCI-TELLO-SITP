@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence
 
 
-DEFAULT_MINDWAVE_PORT = "/dev/cu.usbmodem2017_2_251"
 DEFAULT_MINDWAVE_BAUD = 57600
 
 
@@ -72,13 +71,10 @@ def add_sys_path(path: Optional[str]) -> None:
 
 
 def import_neurosky(neuropy_dir: Optional[str] = None) -> Any:
-    """Import NeuroSkyPy without binding the project to one source tree."""
+    """Import ``NeuroSkyPy`` from an explicitly supplied dependency location."""
 
-    repo_root = Path(__file__).resolve().parent.parent
     add_sys_path(neuropy_dir)
     add_sys_path(os.getenv("NEUROPY_DIR"))
-    add_sys_path(str(repo_root / "MI-DroneControl" / "drone"))
-    add_sys_path(str(repo_root / "MI-CarControl"))
     candidates = [
         "neuropy",
     ]
@@ -166,7 +162,7 @@ class BrainSignalReader:
         blink_debounce_sec: float = 0.5,
         device_factory: Optional[Callable[[str, int], Any]] = None,
     ) -> None:
-        self.port = port or os.getenv("MINDWAVE_PORT", DEFAULT_MINDWAVE_PORT)
+        self.port = port or os.getenv("MINDWAVE_PORT")
         self.baud = int(baud or os.getenv("MINDWAVE_BAUD", str(DEFAULT_MINDWAVE_BAUD)))
         self.neuropy_dir = neuropy_dir
         self.window_size = max(1, int(window_size))
@@ -183,6 +179,8 @@ class BrainSignalReader:
         self.blink_active = False
 
     def start(self) -> None:
+        if self.port is None:
+            raise RuntimeError("MindWave port is required. Pass --mindwave-port or set MINDWAVE_PORT.")
         factory = self.device_factory or import_neurosky(self.neuropy_dir)
         self.device = factory(self.port, self.baud)
         self.device.start()

@@ -257,7 +257,7 @@ def distillation_loss(
 def main() -> int:
     print(
         "bin.training exposes reusable training utilities. "
-        "Run the legacy data-collection training workflow from MI-DroneControl/drone/train_user.py "
+        "Run the interactive data-collection training workflow from MI-DroneControl/train.py "
         "until it is split into a non-interactive pipeline."
     )
     return 0
