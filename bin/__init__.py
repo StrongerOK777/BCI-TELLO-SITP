@@ -1,9 +1,9 @@
-"""Shared Python 3 utilities for BCI hardware control."""
+"""Reusable building blocks shared across BCI device applications."""
 
 __all__ = [
     "eeg",
-    "hardware",
-    "mi_drone_control",
+    "keyboard",
     "models",
     "training",
+    "transport",
 ]

@@ -2,16 +2,17 @@
 
 这是一个同济大学本科生创新训练项目(SITP)。
 
-本文包含了对于脑环的基础环境配置，测试连接，无人机的连接，使用脑环控制无人机三个部分。
+本文包含脑环基础环境配置、脑环接口配置、公共训练流程，以及小车、无人机、机械臂三个硬件的脑环控制程序说明。
 
 # 目录（Contents）
 
 - [环境配置](#env)
 - [测试游戏使用](#spaceinvader)
-- [仓库文件结构](#repo-structure)
-- [基于运动想象控制TELLO无人机](#MI-Control)
+- [脑环接口配置](#bci-interface)
+- [公共训练与模型产物](#train-user)
+- [硬件控制使用指南](#hardware-control)
+- [仓库结构](#repo-structure)
 - [后续计划](#future)
-- [仓库目录](#repo-structure) 
 
 <a name="env"></a>
 
@@ -120,91 +121,244 @@
 
     当然，3.11版本运行的时候会调用**本文件夹**中的Neuropy.py程序，请务必**不要删除！** 但是2.7.版本中没有这方面考虑，请各位自己研究其中的原因:)。
 
-<a name="MI-Control"></a>
+<a name="bci-interface"></a>
 
-# 基于运动想象控制TELLO无人机（Drone Control）：
+# 脑环接口配置（BCI Interface）
+
+电脑和脑环之间的串口连接统一写在根目录的 [bci_interface.py](./bci_interface.py) 中。更换电脑、USB 口或串口号时，只需要修改这个文件，训练程序和三个硬件的 `brain_control.py` 都会自动复用。
+
+## 文件用途：
+
+- `MINDWAVE_PORT`：脑环串口，例如 Windows 下的 `COM5`，或 macOS 下的 `/dev/cu.usbmodem2017_2_251`。
+- `MINDWAVE_BAUD`：脑环波特率，默认 `57600`。
+- `NEUROPY_DIR`：项目中 `neuropy.py` 驱动所在目录，默认指向 `TrainUser/`。
+- `get_mindwave_interface()`：统一返回串口、波特率和驱动目录，供其他程序调用。
+
+示例：
+
+```python
+MINDWAVE_PORT = "COM5"                    # Windows 示例
+MINDWAVE_PORT = "/dev/cu.usbmodem2017_2_251"  # macOS 示例
+MINDWAVE_BAUD = 57600
+```
+
+<a name="train-user"></a>
+
+# 公共训练与模型产物（TrainUser / src）
+
+现在脑环训练是全项目通用的。只需要训练一次，生成的模型即可被小车、无人机和机械臂共同使用。
 
 ## 文件概况：
 
-  [KeyboardControl.py](./MI-DroneControl/KeyboardControl.py)：本使用键盘直接控制无人机移动的程序KeyboardControl.py文件。建议先使用这个程序测试成功无人机飞行状态无误后进行下一步操作。
-
-  [单通道训练参考文献](./MI-DroneControl/Smart_Ward_Control_Based_on_a_Wearable_Multimodal_BrainComputer_Interface_Mouse.pdf)：较新期刊，[train_user.py](./MI-DroneControl/drone/train_user.py)的参考文献。
-
-  [drone/](./MI-DroneControl/drone/)：这是整体无人机程序的所有使用的python文件
-
-  data/：使用[train_user.py](./MI-DroneControl/drone/train_user.py)文件后生成的目录，用以存取用户的个人本次生成的原始数据文件。
-
-  picture/：使用[train_user.py](./MI-DroneControl/drone/train_user.py)文件训练了用户的个性化模型之后生成的图形化图表目录。
-
-  model/：使用[train_user.py](./MI-DroneControl/drone/train_user.py)文件训练的五种不同条件下的以及经过五种模型蒸馏得到的 **FinalModel.pth** 用户个性化模型。
-
-## 模块化调用：
-
-  当前仓库的可复用工具已经集中到 [bin/](./bin/) Python 包中。外部程序优先通过 import 调用这些接口，而不是复制旧脚本中的函数：
-
-  ```python
-  from bin.mi_drone_control import MIDroneController, MIDroneConfig, run_mi_drone_control
-  from bin.eeg import BrainSignalReader, EEGSnapshot, collect_rule_window, collect_feature_window, build_feature_vector
-  from bin.models import FinalUnifiedModel, load_final_model, predict_window
-  from bin.hardware import TelloDroneController, SimulatedDroneController, ArmController, CarHttpController
-  ```
-
-  旧路径下的 `mergedrone.py`、`predict_loop.py`、`blinktest.py`、车控和机械臂入口现在只作为兼容启动脚本，核心逻辑在 `bin` 包中维护。
+- [TrainUser/train_user.py](./TrainUser/train_user.py)：公共训练主程序，负责采集左手、右手、静息三类数据，并训练最终模型。
+- [TrainUser/neuropy.py](./TrainUser/neuropy.py)：NeuroSky / MindWave 脑环驱动。
+- [TrainUser/README.md](./TrainUser/README.md)：训练目录说明。
+- [src/data/](./src/data/)：训练得到的原始数据文件。
+- [src/models/](./src/models/)：训练得到的模型文件，其中 `FinalModel.pth` 是三个硬件默认使用的最终模型。
+- [src/picture/](./src/picture/)：训练过程产生的图表。
 
 ## 使用指南：
 
-  - ### 1.预处理：
-  
-    首先配置好所有文件的串口（这里没有做统一文件修改，很遗憾），使用[blinktest.py](./MI-DroneControl/drone/blinktest.py)文件测试连接是否正常，当稳定出现poorsignal==0的时候说明连接完美。
-    
-    尝试使用上眼睑眨眼，观察终端窗口变化的blinkstrength值是否发生变化，如果一直没有变化请继续尝试，知道出现明显的值为止（一般非自然眨眼大约为blinkstrength==140，仅作参考），关闭终端，进行下一步程序。
+### 1. 修改脑环接口
 
-    打开[train_user.py](./MI-DroneControl/drone/train_user.py)文件，根据pygame敞口提示保持稳定静止状态或者挥动自己的相应侧肢体，通过不同侧运动实现**运动“想象”**。
-    每次数据读取3秒，一共30组数据，这是为了实现信号的加权，中间的信号加权更大。读取过程中请时刻观察终端窗口是否报错poorsignal too high，如果报错将一直读取，程序不会自动停止。
+先在 [bci_interface.py](./bci_interface.py) 中确认串口配置正确。
 
-    读取数据阶段大约耗时210秒，若pygme窗口自动关闭，请不要关闭终端窗口，程序将在后台进行模型的建立，逐渐生成个人模型，待终端提示 ll tasks completed successfully! 即可关闭，进行测试。
-  
-  - ### 2.模型自我测试：
-    
-    使用[predict_loop.py](./MI-DroneControl/drone/predict_loop.py)程序测试模型准确率，程序将会一直侦测当前状态，给出预测结果。算上安静状态，准确率大约在70%到80%之间。
+### 2. 开始训练
 
-  - ### 3.无人机的飞行：
-  
-    对于没有无人机或者想要虚拟测试的同学，可以使用[predic.py](./MI-DroneControl/drone/predic.py)程序进行测试，终端将会显示当前无人机行为，除了连接真实无人机部分，其他部分和[mergedrone.py](./MI-DroneControl/drone/mergedrone.py)程序一模一样，不用担心，连接无人机即可使用脑环给电脑发信号，电脑控制无人机。
+在项目根目录运行：
 
+```bash
+python TrainUser/train_user.py
+```
 
+训练完成后会生成：
+
+```text
+src/data/actionleft.txt
+src/data/actionright.txt
+src/data/rest.txt
+src/models/FinalModel.pth
+src/picture/final_model_training.png
+```
+
+### 3. 复用模型
+
+三个硬件的脑控程序默认都会读取：
+
+```text
+src/models/FinalModel.pth
+```
+
+如果需要临时指定其他模型，可以使用：
+
+```bash
+--model-path <模型路径>
+```
+
+<a name="hardware-control"></a>
+
+# 硬件控制使用指南（Hardware Control）
+
+<a name="MI-Control"></a>
+
+## 1. 小车控制（MI-CarControl）
+
+## 文件概况：
+
+- [keyboard_control.py](./MI-CarControl/keyboard_control.py)：键盘控制小车，通过 HTTP 向小车发送前进、后退、左转、右转和停止指令。
+- [brain_control.py](./MI-CarControl/brain_control.py)：脑环控制小车，默认使用 `src/models/FinalModel.pth`。
+- [test_brain.py](./MI-CarControl/test_brain.py)：独立测试脑环信号，不连接小车，用于排查串口和信号质量问题。
+- [neuropy.py](./MI-CarControl/neuropy.py)：小车目录保留的脑环驱动副本。
+- [README.md](./MI-CarControl/README.md)：小车目录说明。
+
+## 使用指南：
+
+键盘控制：
+
+```bash
+python MI-CarControl/keyboard_control.py --host 192.168.149.1 --port 5000
+```
+
+脑环控制：
+
+```bash
+python MI-CarControl/brain_control.py
+```
+
+只测试脑环信号：
+
+```bash
+python MI-CarControl/test_brain.py --duration 10
+python MI-CarControl/brain_control.py --test-brain
+```
+
+测试脑环和控制逻辑但不连接真实小车：
+
+```bash
+python MI-CarControl/brain_control.py --dry-run
+```
+
+小车脑控逻辑：默认进入前后模式；双眨眼切换前后模式和转向模式；前后模式通过注意力/冥想判断前进或后退，转向模式通过模型预测 `left / right / rest` 判断左转、右转或停止。
+
+## 2. TELLO 无人机控制（MI-DroneControl）
+
+## 文件概况：
+
+- [keyboard_control.py](./MI-DroneControl/keyboard_control.py)：键盘控制 Tello，并显示摄像头画面。
+- [brain_control.py](./MI-DroneControl/brain_control.py)：脑环控制 Tello，无人机动作由规则信号和共享模型共同决定。
+- [predict.py](./MI-DroneControl/predict.py)：连续读取脑环窗口，并输出模型预测结果。
+- [diagnose.py](./MI-DroneControl/diagnose.py)：脑环信号诊断程序，用于查看 `attention`、`meditation`、`blinkStrength`、`poorSignal` 等状态。
+- [drone_hardware.py](./MI-DroneControl/drone_hardware.py)：Tello 硬件适配层。
+- [neuropy.py](./MI-DroneControl/neuropy.py)：无人机目录保留的脑环驱动副本。
+- [README.md](./MI-DroneControl/README.md)：无人机目录说明。
+
+## 使用指南：
+
+诊断脑环信号：
+
+```bash
+python MI-DroneControl/diagnose.py
+```
+
+查看模型预测：
+
+```bash
+python MI-DroneControl/predict.py
+```
+
+键盘控制无人机：
+
+```bash
+python MI-DroneControl/keyboard_control.py
+```
+
+脑环控制无人机：
+
+```bash
+python MI-DroneControl/brain_control.py
+```
+
+## 3. 机械臂控制（MI-DOFBOT）
+
+## 文件概况：
+
+- [keyboard_control.py](./MI-DOFBOT/keyboard_control.py)：键盘控制 DOFBOT 机械臂。
+- [brain_control.py](./MI-DOFBOT/brain_control.py)：脑环控制 DOFBOT 机械臂，默认使用共享模型。
+- [arm_hardware.py](./MI-DOFBOT/arm_hardware.py)：DOFBOT 硬件适配层。
+- [Arm_Lib (Windows)/](./MI-DOFBOT/Arm_Lib%20(Windows)/)：机械臂底层串口库。
+- [readme.md](./MI-DOFBOT/readme.md)：机械臂目录说明。
+
+## 使用指南：
+
+键盘控制建议先 dry-run：
+
+```bash
+python MI-DOFBOT/keyboard_control.py --dry-run
+```
+
+脑环控制首次也建议 dry-run：
+
+```bash
+python MI-DOFBOT/brain_control.py --dry-run
+```
+
+确认信号和动作逻辑正常后，再连接真实机械臂并指定串口：
+
+```bash
+python MI-DOFBOT/brain_control.py --arm-port COM4
+```
 
 <a name="future"></a>
 
 # 后续计划（Future Plan）：
-  开始基于SSVEP的开发
 
+- 保持 `bci_interface.py` 作为统一脑环接口，避免串口配置散落在各个程序中。
+- 继续优化 `TrainUser/` 的训练流程，让一次训练得到的模型可以更稳定地服务三类硬件。
+- 后续可以在现有架构上继续开发 SSVEP 控制方式。
 
 <a name="repo-structure"></a>
 
-- [README.md](./README.md)
-- [MI-DroneControl/](./MI-DroneControl/)
-  - [KeyPressModule.py](./MI-DroneControl/KeyPressModule.py)
-  - [KeyboardControl.py](./MI-DroneControl/KeyboardControl.py)
-  - [Smart_Ward_Control_Based_on_a_Wearable_Multimodal_BrainComputer_Interface_Mouse.pdf](./MI-DroneControl/Smart_Ward_Control_Based_on_a_Wearable_Multimodal_BrainComputer_Interface_Mouse.pdf)
-  - [drone/](./MI-DroneControl/drone/)
-    - [README.md](./MI-DroneControl/drone/README.md)
-    - [blinktest.py](./MI-DroneControl/drone/blinktest.py)
-    - [drone_control.py](./MI-DroneControl/drone/drone_control.py)
-    - [game_1.py](./MI-DroneControl/drone/game_1.py)
-    - [load_final_model.py](./MI-DroneControl/drone/load_final_model.py)
-    - [mergedrone.py](./MI-DroneControl/drone/mergedrone.py)
-    - [neuropy.py](./MI-DroneControl/drone/neuropy.py)
-    - [predic.py](./MI-DroneControl/drone/predic.py)
-    - [predict_loop.py](./MI-DroneControl/drone/predict_loop.py)
-    - [train_user.py](./MI-DroneControl/drone/train_user.py)
-    - [up_and_down.py](./MI-DroneControl/drone/up_and_down.py)
-- [Spaceinvaders/](./Spaceinvaders/)
-  - [Python2.7ver./](./Spaceinvaders/Python2.7ver./)
-    - [README.md](./Spaceinvaders/Python2.7ver./README.md)
-    - [spaceinvaders.py](./Spaceinvaders/Python2.7ver./spaceinvaders.py)
-    - [test.py](./Spaceinvaders/Python2.7ver./test.py)
-  - [Python3.11ver./](./Spaceinvaders/Python3.11ver./)
-    - [NeuroPy.py](./Spaceinvaders/Python3.11ver./NeuroPy.py)
-    - [diagnose_eeg.py](./Spaceinvaders/Python3.11ver./diagnose_eeg.py)
-    - [spaceinvaders.py](./Spaceinvaders/Python3.11ver./spaceinvaders.py)
+# 仓库结构（Repository Structure）
+
+```text
+BCI-TELLO/
+├── README.md                         # 项目总说明
+├── bci_interface.py                  # 电脑与脑环通信接口配置
+├── TrainUser/                        # 公共脑环训练程序
+│   ├── train_user.py                 # 采集数据并训练共享模型
+│   ├── neuropy.py                    # NeuroSky / MindWave 驱动
+│   └── README.md
+├── src/                              # 公共训练产物
+│   ├── data/                         # 训练数据
+│   ├── models/                       # 共享模型，默认 FinalModel.pth
+│   ├── picture/                      # 训练图表
+│   └── README.md
+├── MI-CarControl/                    # 小车控制
+│   ├── keyboard_control.py           # 小车键盘控制
+│   ├── brain_control.py              # 小车脑环控制
+│   ├── test_brain.py                 # 小车侧脑环信号测试
+│   ├── neuropy.py
+│   └── README.md
+├── MI-DroneControl/                  # Tello 无人机控制
+│   ├── keyboard_control.py           # 无人机键盘控制
+│   ├── brain_control.py              # 无人机脑环控制
+│   ├── predict.py                    # 模型预测测试
+│   ├── diagnose.py                   # 脑环信号诊断
+│   ├── drone_hardware.py             # Tello 硬件适配
+│   ├── neuropy.py
+│   └── README.md
+├── MI-DOFBOT/                        # DOFBOT 机械臂控制
+│   ├── keyboard_control.py           # 机械臂键盘控制
+│   ├── brain_control.py              # 机械臂脑环控制
+│   ├── arm_hardware.py               # 机械臂硬件适配
+│   ├── Arm_Lib (Windows)/            # 底层机械臂库
+│   └── readme.md
+├── bin/                              # 可迁移基础模块
+│   ├── eeg.py                        # EEG 采集和特征构建
+│   ├── models.py                     # 模型结构和预测工具
+│   ├── training.py                   # 可复用训练工具
+│   ├── keyboard.py                   # 通用键盘读取
+│   └── transport.py                  # 通用 JSON HTTP 传输
+├── Spaceinvaders/                    # 脑环测试游戏和历史实验代码
+└── tests/                            # 自动化测试
+```
