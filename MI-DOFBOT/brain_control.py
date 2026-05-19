@@ -53,16 +53,22 @@ MODEL_LABELS = {
 
 # Repo-local defaults remain overrideable through CLI flags or environment variables.
 REPO_ROOT = Path(__file__).resolve().parents[1]
-KNOWN_NEUROPY_DIR = REPO_ROOT / "MI-DroneControl"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from bci_interface import get_mindwave_interface
+
+KNOWN_NEUROPY_DIR = REPO_ROOT / "TrainUser"
 KNOWN_ARM_LIB_DIR = Path(__file__).resolve().parent / "Arm_Lib (Windows)"
+DEFAULT_MODEL_PATH = REPO_ROOT / "src" / "models" / "FinalModel.pth"
+DEFAULT_INTERFACE = get_mindwave_interface(neuropy_dir=KNOWN_NEUROPY_DIR)
 
 
 @dataclass
 class BrainArmConfig:
-    mindwave_port: str
-    mindwave_baud: int = 57600
+    mindwave_port: str = DEFAULT_INTERFACE.port
+    mindwave_baud: int = DEFAULT_INTERFACE.baud
     arm_port: str = "COM4"
-    model_path: Optional[str] = None
+    model_path: Optional[str] = str(DEFAULT_MODEL_PATH)
     dry_run: bool = False
     angle_step: int = 5
     move_time_ms: int = 200
@@ -77,7 +83,7 @@ class BrainArmConfig:
     gripper_servo_id: int = 6
     gripper_open_angle: int = 120
     gripper_close_angle: int = 60
-    neuropy_dir: Optional[str] = None
+    neuropy_dir: Optional[str] = DEFAULT_INTERFACE.neuropy_dir
     arm_lib_dir: Optional[str] = None
     log_level: str = "INFO"
     home_time_ms: int = 1000
@@ -892,10 +898,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Control a robotic arm with NeuroSky / MindWave EEG signals."
     )
-    parser.add_argument("--mindwave-port", default=os.getenv("MINDWAVE_PORT", "COM6"))
-    parser.add_argument("--mindwave-baud", type=int, default=57600)
+    parser.add_argument("--mindwave-port", default=DEFAULT_INTERFACE.port)
+    parser.add_argument("--mindwave-baud", type=int, default=DEFAULT_INTERFACE.baud)
     parser.add_argument("--arm-port", default=os.getenv("ARM_PORT", "COM4"))
-    parser.add_argument("--model-path", default=None)
+    parser.add_argument("--model-path", default=str(DEFAULT_MODEL_PATH))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--angle-step", type=int, default=5)
     parser.add_argument("--move-time-ms", type=int, default=200)
@@ -910,7 +916,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gripper-servo-id", type=int, default=6)
     parser.add_argument("--gripper-open-angle", type=int, default=120)
     parser.add_argument("--gripper-close-angle", type=int, default=60)
-    parser.add_argument("--neuropy-dir", default=None)
+    parser.add_argument("--neuropy-dir", default=DEFAULT_INTERFACE.neuropy_dir)
     parser.add_argument("--arm-lib-dir", default=None)
     parser.add_argument("--log-level", default="INFO")
     return parser

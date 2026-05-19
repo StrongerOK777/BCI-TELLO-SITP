@@ -15,13 +15,17 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from bin.eeg import run_blink_test
+from bci_interface import get_mindwave_interface
+
+
+DEFAULT_INTERFACE = get_mindwave_interface(neuropy_dir=DEVICE_DIR)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Print live MindWave diagnostics.")
-    parser.add_argument("--mindwave-port", default=None)
-    parser.add_argument("--mindwave-baud", type=int, default=None)
-    parser.add_argument("--neuropy-dir", default=str(DEVICE_DIR))
+    parser.add_argument("--mindwave-port", default=DEFAULT_INTERFACE.port)
+    parser.add_argument("--mindwave-baud", type=int, default=DEFAULT_INTERFACE.baud)
+    parser.add_argument("--neuropy-dir", default=DEFAULT_INTERFACE.neuropy_dir)
     parser.add_argument("--sample-interval", type=float, default=0.1)
     return parser
 

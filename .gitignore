@@ -54,6 +54,3 @@ output/
 
 records.txt
 
-# Generated training outputs
-MI-DroneControl/data/
-MI-DroneControl/picture/

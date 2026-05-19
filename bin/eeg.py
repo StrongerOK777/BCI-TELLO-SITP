@@ -86,8 +86,7 @@ def import_neurosky(neuropy_dir: Optional[str] = None) -> Any:
         except Exception as exc:
             last_error = exc
     raise RuntimeError(
-        "Could not import NeuroSkyPy. Set --neuropy-dir or NEUROPY_DIR to the folder "
-        "that contains neuropy.py."
+        "Could not import NeuroSkyPy. Set --neuropy-dir to the folder that contains neuropy.py."
     ) from last_error
 
 
@@ -180,7 +179,7 @@ class BrainSignalReader:
 
     def start(self) -> None:
         if self.port is None:
-            raise RuntimeError("MindWave port is required. Pass --mindwave-port or set MINDWAVE_PORT.")
+            raise RuntimeError("MindWave port is required. Configure bci_interface.py or pass --mindwave-port.")
         factory = self.device_factory or import_neurosky(self.neuropy_dir)
         self.device = factory(self.port, self.baud)
         self.device.start()
