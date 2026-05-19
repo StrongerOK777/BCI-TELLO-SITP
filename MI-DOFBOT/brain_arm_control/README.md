@@ -1,64 +1,60 @@
 # 脑电信号控制机械臂
 
-本目录包含第一版脑电信号控制机械臂程序：
+本目录是 DOFBOT-SE + NeuroSky / MindWave 的脑控机械臂部分，包含三类程序：
 
-- `brain_arm_control.py`
+| 文件 | 作用 |
+|---|---|
+| `brain_arm_control.py` | 主控制程序，读取脑环数据并控制机械臂。 |
+| `collect_training_data.py` | 采集 `left / right / rest` 三类 EEG 训练数据。 |
+| `train_eeg_model.py` | 训练可选模型并导出 `model/FinalModel.pth`。 |
 
-程序通过 `neuropy.py` 读取 NeuroSky / MindWave 脑环数据，通过 `Arm_Lib.py` 控制机械臂，并参考原键盘控制程序的舵机动作映射。
+第一版的重点是稳定、安全、可调参。模型只用于 **mode 1 左右旋转**，不控制 6 个自由度。
 
-## 功能概览
+## 当前脑控范围
 
-- 使用 30 次采样窗口，每次间隔 0.1 秒，约 3 秒做一次决策。
-- 使用 `attention` / `meditation` 阈值计数控制机械臂动作。
-- 使用 `blinkStrength` 检测眨眼：
-  - 单次眨眼：切换夹爪开合。
-  - 两次或更多眨眼：切换控制模式。
-- 实现三个控制模式：
-  - mode 0：升降模式，控制 3 号舵机。
-  - mode 1：旋转模式，控制 1 号舵机。
-  - mode 2：前后模式，控制 2 号舵机。
-- 支持 `--dry-run`，不连接真实机械臂，只输出将执行的动作。
-- 支持可选模型预测，只有传入 `--model-path` 时才尝试加载 PyTorch 模型。
-- poorSignal 过高时不执行动作，poorSignal 等于 200 时机械臂回安全姿态并等待信号恢复。
+| 控制方式 | 控制内容 | 默认舵机 |
+|---|---|---:|
+| mode 0 | 上升 / 下降 | 3 |
+| mode 1 | 底座左转 / 右转 | 1 |
+| mode 2 | 前伸 / 收回 | 2 |
+| 单眨眼 | 同一个夹爪打开 / 闭合切换 | 6 |
 
-## 依赖文件
+说明：
 
-程序默认会尝试从当前项目路径导入：
+- 4 号舵机在代码中保留了 `joint4_decrease()` / `joint4_increase()`，但还没有分配脑控模式。
+- 5 号舵机当前只在安全姿态里保持 135 度。
+- “切换夹爪”指的是同一个夹爪在打开和闭合之间切换，不是多个夹爪之间切换。
 
-- `D:\XX\SITP脑机\总体文件\drone\neuropy.py`
-- `D:\XX\SITP脑机\机械臂控制\0.py_install\Arm_Lib (Windows)\Arm_Lib.py`
+## 交互式端口填写
 
-如果你的文件位置变化，可以通过命令行参数指定：
+如果运行时不传串口参数，程序会在启动前询问。
 
 ```bash
---neuropy-dir "D:\path\to\neuropy_folder" --arm-lib-dir "D:\path\to\Arm_Lib_folder"
+python brain_arm_control.py
 ```
 
-## 机械臂动作映射
+会提示：
 
-程序优先参考 `keyboard_control.py` 中已经验证过的映射：
+```text
+请输入脑环端口，例如 COM6:
+请输入机械臂端口，例如 COM4，直接回车使用 COM4:
+```
 
-- 1 号舵机：左右旋转。
-  - 减小角度：左转。
-  - 增加角度：右转。
-- 2 号舵机：前后伸缩。
-  - 增加角度：前伸。
-  - 减小角度：收回。
-- 3 号舵机：上下。
-  - 增加角度：上升。
-  - 减小角度：下降。
-- 4 号舵机：辅助关节。
-- 6 号舵机：默认作为夹爪控制舵机。
+dry-run 模式只需要填写脑环端口：
 
-默认安全姿态：
+```bash
+python brain_arm_control.py --dry-run
+```
 
-```python
-[90, 90, 90, 90, 135, 90]
+如果已经通过命令行传入端口，程序不会重复询问：
+
+```bash
+python brain_arm_control.py --mindwave-port COM6 --arm-port COM4
 ```
 
 ## Dry-run 测试
 
-没有连接机械臂时，先用 dry-run 测试脑环信号：
+没有连接机械臂时，先用 dry-run 测脑环信号：
 
 ```bash
 python brain_arm_control.py --mindwave-port COM6 --dry-run
@@ -68,7 +64,7 @@ dry-run 模式下：
 
 - 会读取脑环数据。
 - 不会真实控制机械臂。
-- 会打印窗口统计和将要执行的动作。
+- 会打印每个窗口的统计结果和将要执行的动作。
 - Ctrl+C 后会正常清理退出。
 
 ## 真实机械臂运行
@@ -82,35 +78,110 @@ python brain_arm_control.py --mindwave-port COM6 --arm-port COM4
 带可选模型：
 
 ```bash
-python brain_arm_control.py --mindwave-port COM6 --arm-port COM4 --model-path FinalModel.pth
+python brain_arm_control.py --mindwave-port COM6 --arm-port COM4 --model-path model/FinalModel.pth
 ```
 
 如果模型加载失败，程序会自动降级为规则控制，不会因为模型不可用而退出。
 
-## 常用参数
+## 训练数据采集
+
+采集脚本只连接脑环，不连接机械臂。
 
 ```bash
-python brain_arm_control.py ^
-  --mindwave-port COM6 ^
-  --mindwave-baud 57600 ^
-  --arm-port COM4 ^
-  --angle-step 5 ^
-  --move-time-ms 200 ^
-  --attention-threshold 45 ^
-  --meditation-threshold 55 ^
-  --blink-threshold 100 ^
-  --poor-signal-threshold 100 ^
-  --gripper-servo-id 6 ^
-  --gripper-open-angle 120 ^
-  --gripper-close-angle 60
+python collect_training_data.py
 ```
 
-说明：
+如果不传端口，会提示：
 
-- `--angle-step` 默认 5，程序会自动限制最大不超过 10。
-- `--move-time-ms` 默认 200。
-- `--poor-signal-threshold` 默认 100。
-- `--gripper-servo-id` 默认 6。如果实际夹爪不是 6 号，只需要改这个参数和开合角度。
+```text
+请输入脑环端口，例如 COM6:
+```
+
+也可以直接传参：
+
+```bash
+python collect_training_data.py --mindwave-port COM6
+```
+
+默认行为：
+
+- 采集三类：`left`、`right`、`rest`。
+- 每类默认 10 轮。
+- 每轮准备 3 秒。
+- 每轮采集 30 个有效样本。
+- 每个样本间隔 0.1 秒。
+- `poorSignal > 20` 或 attention / meditation 为 0 时跳过样本。
+- 默认输出到 `data/`：
+  - `data/actionleft.txt`
+  - `data/actionright.txt`
+  - `data/rest.txt`
+
+常用参数：
+
+```bash
+python collect_training_data.py ^
+  --mindwave-port COM6 ^
+  --output-dir data ^
+  --rounds-per-label 10 ^
+  --samples-per-round 30 ^
+  --poor-signal-threshold 20
+```
+
+默认会清空旧的三个数据文件。如果想继续追加数据，加：
+
+```bash
+python collect_training_data.py --mindwave-port COM6 --append
+```
+
+## 模型训练
+
+训练脚本读取 `data/` 中的三类 txt 文件，生成 `model/FinalModel.pth`。
+
+```bash
+python train_eeg_model.py --data-dir data --output model/FinalModel.pth
+```
+
+模型输入方式：
+
+- 每条 EEG 原始数据构造 14 维特征。
+- 一个窗口默认 30 条数据。
+- 对窗口求 mean 和 std。
+- 最终输入为 28 维。
+
+输出标签：
+
+```text
+0 -> left
+1 -> right
+2 -> rest
+```
+
+因此模型只用于 mode 1：
+
+```text
+left  -> base_left()
+right -> base_right()
+rest  -> 不动
+```
+
+常用训练参数：
+
+```bash
+python train_eeg_model.py ^
+  --data-dir data ^
+  --output model/FinalModel.pth ^
+  --window-size 30 ^
+  --stride 1 ^
+  --epochs 150 ^
+  --patience 25 ^
+  --batch-size 32
+```
+
+训练需要安装：
+
+```bash
+pip install numpy torch
+```
 
 ## 控制规则
 
@@ -118,7 +189,7 @@ mode 0：升降模式
 
 - attention 明显高于 meditation：`arm_up()`
 - meditation 明显高于 attention：`arm_down()`
-- 单眨眼：切换夹爪。
+- 单眨眼：夹爪打开 / 闭合切换。
 - 双眨眼：切换到 mode 1。
 
 mode 1：旋转模式
@@ -130,28 +201,37 @@ mode 1：旋转模式
 - 无模型或模型预测失败：
   - attention 明显高于 meditation：`base_right()`
   - meditation 明显高于 attention：`base_left()`
-- 单眨眼：切换夹爪。
+- 单眨眼：夹爪打开 / 闭合切换。
 - 双眨眼：切换到 mode 2。
 
 mode 2：前后模式
 
 - attention 明显高于 meditation：`arm_forward()`
 - meditation 明显高于 attention：`arm_backward()`
-- 单眨眼：切换夹爪。
+- 单眨眼：夹爪打开 / 闭合切换。
 - 双眨眼：切换回 mode 0。
 
 ## 安全策略
 
 - 程序启动后先执行 home。
-- 所有舵机角度写入前都会 clamp 到安全范围：
+- 默认安全姿态为 `[90, 90, 90, 90, 135, 90]`。
+- 每次动作默认只改变 5 度，最大不超过 10 度。
+- 所有舵机角度写入前都会限制到安全范围：
   - 1/2/3/4/6 号：0 到 180。
   - 5 号：0 到 270。
 - `poorSignal >= 100` 时不执行动作，只保持当前位置。
 - `poorSignal == 200` 时认为信号极差或断开，机械臂回 home 并等待信号恢复。
 - Ctrl+C 或异常退出时，会停止脑环读取、机械臂回 home，并关闭机械臂串口。
 
-## 注意事项
+## 依赖路径
 
-- 第一次运行建议务必加 `--dry-run`。
-- 如果机械臂方向与预期相反，先不要改底层串口帧，应优先检查 `keyboard_control.py` 中同一舵机的实际方向，再调整本程序动作封装。
-- 夹爪默认使用 6 号舵机，因为原键盘程序只提供了 6 号电机的 Space / X 控制映射，没有提供 5 号舵机夹爪映射。
+程序默认会尝试从当前项目路径导入：
+
+- `D:\XX\SITP脑机\总体文件\drone\neuropy.py`
+- `D:\XX\SITP脑机\机械臂控制\0.py_install\Arm_Lib (Windows)\Arm_Lib.py`
+
+如果文件位置变化，可以通过命令行参数指定：
+
+```bash
+--neuropy-dir "D:\path\to\neuropy_folder" --arm-lib-dir "D:\path\to\Arm_Lib_folder"
+```
