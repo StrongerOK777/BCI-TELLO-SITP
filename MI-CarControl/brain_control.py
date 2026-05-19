@@ -19,6 +19,7 @@ if str(DEVICE_DIR) not in sys.path:
 
 from bin.eeg import BrainSignalReader, FeatureWindowResult, WindowResult
 from bin.models import LABELS, ModelPredictor
+from bci_interface import get_mindwave_interface
 from keyboard_control import CarSignalClient
 
 
@@ -28,7 +29,8 @@ MODE_NAMES = {
     MODE_FORWARD_BACKWARD: "前后",
     MODE_TURNING: "转向",
 }
-DEFAULT_MODEL_PATH = ROOT_DIR / "models" / "FinalModel.pth"
+DEFAULT_MODEL_PATH = ROOT_DIR / "src" / "models" / "FinalModel.pth"
+DEFAULT_INTERFACE = get_mindwave_interface(neuropy_dir=DEVICE_DIR)
 
 
 class SignalSender(Protocol):
@@ -38,10 +40,10 @@ class SignalSender(Protocol):
 
 @dataclass
 class CarBrainConfig:
-    mindwave_port: Optional[str] = None
-    mindwave_baud: Optional[int] = None
+    mindwave_port: Optional[str] = DEFAULT_INTERFACE.port
+    mindwave_baud: Optional[int] = DEFAULT_INTERFACE.baud
     model_path: str = str(DEFAULT_MODEL_PATH)
-    neuropy_dir: str = str(DEVICE_DIR)
+    neuropy_dir: str = DEFAULT_INTERFACE.neuropy_dir
     window_size: int = 30
     sample_interval: float = 0.1
     attention_threshold: int = 30
@@ -167,10 +169,10 @@ def build_controller(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Brain-signal control for the HTTP-driven car.")
-    parser.add_argument("--mindwave-port", default=None)
-    parser.add_argument("--mindwave-baud", type=int, default=None)
+    parser.add_argument("--mindwave-port", default=DEFAULT_INTERFACE.port)
+    parser.add_argument("--mindwave-baud", type=int, default=DEFAULT_INTERFACE.baud)
     parser.add_argument("--model-path", default=str(DEFAULT_MODEL_PATH))
-    parser.add_argument("--neuropy-dir", default=str(DEVICE_DIR))
+    parser.add_argument("--neuropy-dir", default=DEFAULT_INTERFACE.neuropy_dir)
     parser.add_argument("--host", default="192.168.149.1")
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--speed", type=int, default=50)

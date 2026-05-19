@@ -18,10 +18,12 @@ if str(DEVICE_DIR) not in sys.path:
 
 from bin.eeg import BrainSignalReader, FeatureWindowResult, WindowResult
 from bin.models import LABELS, ModelPredictor
+from bci_interface import get_mindwave_interface
 from drone_hardware import DroneController, SimulatedDroneController, TelloDroneController
 
 
-DEFAULT_MODEL_PATH = ROOT_DIR / "models" / "FinalModel.pth"
+DEFAULT_MODEL_PATH = ROOT_DIR / "src" / "models" / "FinalModel.pth"
+DEFAULT_INTERFACE = get_mindwave_interface(neuropy_dir=DEVICE_DIR)
 
 
 MODE_VERTICAL = 0
@@ -36,10 +38,10 @@ MODE_NAMES = {
 
 @dataclass
 class MIDroneConfig:
-    mindwave_port: Optional[str] = None
-    mindwave_baud: Optional[int] = None
+    mindwave_port: Optional[str] = DEFAULT_INTERFACE.port
+    mindwave_baud: Optional[int] = DEFAULT_INTERFACE.baud
     model_path: Optional[str] = str(DEFAULT_MODEL_PATH)
-    neuropy_dir: Optional[str] = str(DEVICE_DIR)
+    neuropy_dir: Optional[str] = DEFAULT_INTERFACE.neuropy_dir
     simulated: bool = False
     window_size: int = 30
     sample_interval: float = 0.1
@@ -285,10 +287,10 @@ def run_prediction_loop(config: Optional[MIDroneConfig] = None) -> None:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Control Tello with MindWave motor-imagery signals.")
-    parser.add_argument("--mindwave-port", default=None)
-    parser.add_argument("--mindwave-baud", type=int, default=None)
+    parser.add_argument("--mindwave-port", default=DEFAULT_INTERFACE.port)
+    parser.add_argument("--mindwave-baud", type=int, default=DEFAULT_INTERFACE.baud)
     parser.add_argument("--model-path", default=str(DEFAULT_MODEL_PATH))
-    parser.add_argument("--neuropy-dir", default=str(DEVICE_DIR))
+    parser.add_argument("--neuropy-dir", default=DEFAULT_INTERFACE.neuropy_dir)
     parser.add_argument("--simulated", action="store_true")
     parser.add_argument("--predict-only", action="store_true")
     parser.add_argument("--window-size", type=int, default=30)
