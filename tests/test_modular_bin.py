@@ -149,6 +149,24 @@ class ModularCoreTests(unittest.TestCase):
 
 
 class CarBrainControlTests(unittest.TestCase):
+    def test_car_forward_backward_stops_only_when_both_counts_are_low(self):
+        sender = FakeSender()
+        results = [
+            WindowResult("前后", attention_count=25, meditation_count=10),
+            WindowResult("前后", attention_count=10, meditation_count=10),
+        ]
+        controller = car_brain.CarBrainController(
+            car_brain.CarBrainConfig(min_decision_count=20),
+            FakeReader(results),
+            FakePredictor(),
+            sender,
+        )
+
+        controller.step()
+        controller.step()
+
+        self.assertEqual(sender.signals, ["前进", "停止"])
+
     def test_car_state_machine_switches_modes_and_sends_expected_signals(self):
         sender = FakeSender()
         results = [

@@ -73,18 +73,36 @@ def add_sys_path(path: Optional[str]) -> None:
 def import_neurosky(neuropy_dir: Optional[str] = None) -> Any:
     """Import ``NeuroSkyPy`` from an explicitly supplied dependency location."""
 
-    add_sys_path(neuropy_dir)
-    add_sys_path(os.getenv("NEUROPY_DIR"))
-    candidates = [
-        "neuropy",
-    ]
+    # 先尝试当前 Python 路径，方便已有环境直接工作。
     last_error: Optional[BaseException] = None
-    for module_name in candidates:
+    try:
+        import neuropy
+
+        return neuropy.NeuroSkyPy
+    except Exception as exc:
+        last_error = exc
+
+    # 再尝试显式传入的驱动目录。设备入口通常会从 bci_interface.py 传入这里。
+    if neuropy_dir:
+        add_sys_path(neuropy_dir)
         try:
-            module = importlib.import_module(module_name)
+            importlib.invalidate_caches()
+            module = importlib.import_module("neuropy")
             return getattr(module, "NeuroSkyPy")
         except Exception as exc:
             last_error = exc
+
+    # 最后保留环境变量兜底，方便现场临时调试。
+    neuropy_env = os.getenv("NEUROPY_DIR")
+    if neuropy_env:
+        add_sys_path(neuropy_env)
+        try:
+            importlib.invalidate_caches()
+            module = importlib.import_module("neuropy")
+            return getattr(module, "NeuroSkyPy")
+        except Exception as exc:
+            last_error = exc
+
     raise RuntimeError(
         "Could not import NeuroSkyPy. Set --neuropy-dir to the folder that contains neuropy.py."
     ) from last_error
@@ -180,9 +198,14 @@ class BrainSignalReader:
     def start(self) -> None:
         if self.port is None:
             raise RuntimeError("MindWave port is required. Configure bci_interface.py or pass --mindwave-port.")
+        print("[BrainSignalReader] 初始化脑环设备...")
+        print(f"[BrainSignalReader] 端口: {self.port}, 波特率: {self.baud}")
         factory = self.device_factory or import_neurosky(self.neuropy_dir)
+        print("[BrainSignalReader] NeuroSkyPy 加载成功")
         self.device = factory(self.port, self.baud)
+        print("[BrainSignalReader] 启动脑环设备...")
         self.device.start()
+        print("[BrainSignalReader] 脑环设备启动成功")
         self.running = True
 
     def stop(self) -> None:
@@ -247,7 +270,13 @@ class BrainSignalReader:
                 or snapshot.meditation == 0
             ):
                 result.valid = False
-                result.reason = f"poorSignal={snapshot.poorSignal}"
+                if snapshot.attention == 0 or snapshot.meditation == 0:
+                    result.reason = (
+                        f"脑电波未读取：attention={snapshot.attention} "
+                        f"meditation={snapshot.meditation}"
+                    )
+                else:
+                    result.reason = f"poorSignal={snapshot.poorSignal}"
                 break
 
             if snapshot.attention > self.attention_threshold:

@@ -8,6 +8,7 @@
 |---|---|
 | `keyboard_control.py` | 通过键盘向小车 HTTP 接口发送前进、后退、左转、右转和停止指令。 |
 | `brain_control.py` | 通过脑环控制小车；前后模式使用注意力/冥想规则，转向模式使用共享模型。 |
+| `test_brain.py` | 独立脑环信号测试脚本，不连接小车，用于排查串口和信号质量问题。 |
 | `neuropy.py` | 小车侧 NeuroSky / MindWave 驱动副本。 |
 | `README.md` | 本说明文件。 |
 
@@ -50,3 +51,23 @@ src/models/FinalModel.pth
 - 前后模式：注意力更高则前进，冥想更高则后退。
 - 转向模式：模型预测 `left / right / rest`，对应左转、右转、停止。
 - 信号质量差或模型不可用时，只报警，不主动发送新动作。
+
+## 脑环诊断
+
+如果出现 `attention=0`、`meditation=0` 或 `poorSignal=200`，先单独测试脑环：
+
+```bash
+python MI-CarControl/test_brain.py --duration 10
+```
+
+也可以使用脑控程序内置的测试模式：
+
+```bash
+python MI-CarControl/brain_control.py --test-brain
+```
+
+如果只想测试脑环和控制逻辑、不连接真实小车：
+
+```bash
+python MI-CarControl/brain_control.py --dry-run
+```

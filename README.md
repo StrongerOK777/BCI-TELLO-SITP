@@ -207,6 +207,7 @@ src/models/FinalModel.pth
 
 - [keyboard_control.py](./MI-CarControl/keyboard_control.py)：键盘控制小车，通过 HTTP 向小车发送前进、后退、左转、右转和停止指令。
 - [brain_control.py](./MI-CarControl/brain_control.py)：脑环控制小车，默认使用 `src/models/FinalModel.pth`。
+- [test_brain.py](./MI-CarControl/test_brain.py)：独立测试脑环信号，不连接小车，用于排查串口和信号质量问题。
 - [neuropy.py](./MI-CarControl/neuropy.py)：小车目录保留的脑环驱动副本。
 - [README.md](./MI-CarControl/README.md)：小车目录说明。
 
@@ -222,6 +223,19 @@ python MI-CarControl/keyboard_control.py --host 192.168.149.1 --port 5000
 
 ```bash
 python MI-CarControl/brain_control.py
+```
+
+只测试脑环信号：
+
+```bash
+python MI-CarControl/test_brain.py --duration 10
+python MI-CarControl/brain_control.py --test-brain
+```
+
+测试脑环和控制逻辑但不连接真实小车：
+
+```bash
+python MI-CarControl/brain_control.py --dry-run
 ```
 
 小车脑控逻辑：默认进入前后模式；双眨眼切换前后模式和转向模式；前后模式通过注意力/冥想判断前进或后退，转向模式通过模型预测 `left / right / rest` 判断左转、右转或停止。
@@ -322,6 +336,7 @@ BCI-TELLO/
 ├── MI-CarControl/                    # 小车控制
 │   ├── keyboard_control.py           # 小车键盘控制
 │   ├── brain_control.py              # 小车脑环控制
+│   ├── test_brain.py                 # 小车侧脑环信号测试
 │   ├── neuropy.py
 │   └── README.md
 ├── MI-DroneControl/                  # Tello 无人机控制

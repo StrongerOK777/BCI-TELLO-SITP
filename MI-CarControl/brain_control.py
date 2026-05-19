@@ -108,12 +108,20 @@ class CarBrainController:
             self.mode = MODE_TURNING
             print("双眨眼：切换到转向模式")
             return
+
+        print(
+            "前后模式 | "
+            f"Attention: {result.attention_count}/{self.config.window_size}, "
+            f"Meditation: {result.meditation_count}/{self.config.window_size}"
+        )
         if (
             result.attention_count < self.config.min_decision_count
-            or result.meditation_count < self.config.min_decision_count
+            and result.meditation_count < self.config.min_decision_count
         ):
+            print(f"注意力和冥想都过低（各 < {self.config.min_decision_count}），停止")
             self._send("停止")
             return
+
         self._send("前进" if result.attention_count >= result.meditation_count else "后退")
 
     def handle_turning_mode(self, result: WindowResult) -> None:
@@ -182,6 +190,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--meditation-threshold", type=int, default=50)
     parser.add_argument("--blink-threshold", type=int, default=100)
     parser.add_argument("--poor-signal-threshold", type=int, default=20)
+    parser.add_argument("--test-brain", action="store_true", help="仅读取脑环信号，不连接小车")
+    parser.add_argument("--dry-run", action="store_true", help="模拟控制命令，不连接真实小车")
     return parser
 
 
@@ -202,6 +212,10 @@ def config_from_args(args: argparse.Namespace) -> CarBrainConfig:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
+    if args.test_brain:
+        return test_brain_signal_mode(args)
+    if args.dry_run:
+        return test_dry_run_mode(args)
     try:
         build_controller(
             config_from_args(args),
@@ -212,6 +226,93 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     except Exception as exc:
         print(exc, file=sys.stderr)
+        return 1
+
+
+def test_brain_signal_mode(args: argparse.Namespace) -> int:
+    """只测试脑环读取，不连接小车。"""
+
+    print("=" * 60)
+    print("脑环信号测试模式（仅读取脑环数据）")
+    print("=" * 60)
+    print(f"端口: {args.mindwave_port}")
+    print(f"波特率: {args.mindwave_baud}")
+    print()
+
+    reader = BrainSignalReader(
+        port=args.mindwave_port,
+        baud=args.mindwave_baud,
+        neuropy_dir=args.neuropy_dir,
+        window_size=args.window_size,
+        sample_interval=args.sample_interval,
+        attention_threshold=args.attention_threshold,
+        meditation_threshold=args.meditation_threshold,
+        blink_threshold=args.blink_threshold,
+        poor_signal_threshold=args.poor_signal_threshold,
+    )
+
+    count = 0
+    valid_count = 0
+    try:
+        reader.start()
+        print("✓ 脑环已连接，开始采集数据...\n")
+        while True:
+            result = reader.collect_rule_window("测试")
+            count += 1
+            if result.valid:
+                valid_count += 1
+                print(
+                    f"[{count}] ✓ 有效窗口 | "
+                    f"Attention: {result.attention_count}, "
+                    f"Meditation: {result.meditation_count}, "
+                    f"Blinks: {result.blink_count}"
+                )
+            else:
+                print(f"[{count}] ✗ 无效窗口 | 原因: {result.reason}")
+            if result.samples:
+                first = result.samples[0]
+                print(
+                    "      原始数据: "
+                    f"A={first.attention}, M={first.meditation}, "
+                    f"Signal={first.poorSignal}, Blink={first.blinkStrength}"
+                )
+            print()
+    except KeyboardInterrupt:
+        print("\n" + "=" * 60)
+        print(f"测试完成 | 总窗口: {count}, 有效: {valid_count} ({100 * valid_count / max(1, count):.1f}%)")
+        print("=" * 60)
+        return 0
+    except Exception as exc:
+        print(f"✗ 错误: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        reader.stop()
+
+
+def test_dry_run_mode(args: argparse.Namespace) -> int:
+    """测试脑环 + 控制逻辑，但不连接真实小车。"""
+
+    print("=" * 60)
+    print("小车脑控 dry-run 模式（不连接真实小车）")
+    print("=" * 60)
+
+    class DummySender:
+        def send_signal(self, signal: str) -> str:
+            return f"[模拟] {signal}"
+
+    try:
+        controller = build_controller(
+            config_from_args(args),
+            predictor=ModelPredictor(args.model_path, autoload=False),
+            sender=DummySender(),
+            host=args.host,
+            port=args.port,
+            speed=args.speed,
+        )
+        controller.run()
+        return 0
+    except Exception as exc:
+        print(f"错误: {exc}", file=sys.stderr)
         return 1
 
 
