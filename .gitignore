@@ -54,3 +54,7 @@ output/
 
 records.txt
 
+Papers
+
+# agent-rules verification artifacts
+.agents/
