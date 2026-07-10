@@ -113,6 +113,42 @@ def predict_window(
     return predict_features(model, combined, feature_mean, feature_std)
 
 
+def predict_proba_features(
+    model: FinalUnifiedModel,
+    features: Sequence[float],
+    feature_mean: Any = None,
+    feature_std: Any = None,
+) -> List[float]:
+    """Return per-class softmax probabilities for a single combined feature vector.
+
+    An empty feature vector yields an empty list so callers can treat it as
+    "no decision" rather than a spurious class. Unlike :func:`predict_features`
+    (argmax only), this exposes the full distribution so a controller can gate
+    on confidence and fall back to rest.
+    """
+
+    input_data = np.array(features, dtype=np.float32)
+    if input_data.size == 0:
+        return []
+    if feature_mean is not None and feature_std is not None:
+        input_data = (input_data - feature_mean) / (feature_std + 1e-6)
+    input_tensor = torch.tensor(input_data, dtype=torch.float32).unsqueeze(0)
+    with torch.no_grad():
+        logits = model(input_tensor)
+        probabilities = torch.softmax(logits, dim=1).squeeze(0)
+    return [float(value) for value in probabilities]
+
+
+def predict_proba_window(
+    model: FinalUnifiedModel,
+    feature_window: Sequence[Sequence[float]],
+    feature_mean: Any = None,
+    feature_std: Any = None,
+) -> List[float]:
+    combined = combine_feature_window(feature_window)
+    return predict_proba_features(model, combined, feature_mean, feature_std)
+
+
 class ModelPredictor:
     def __init__(self, checkpoint_path: Optional[str | Path] = None, *, autoload: bool = True) -> None:
         self.checkpoint_path = checkpoint_path
@@ -138,6 +174,14 @@ class ModelPredictor:
 
     def predict_label(self, feature_window: Sequence[Sequence[float]]) -> str:
         return LABELS[self.predict_window(feature_window)]
+
+    def predict_proba(self, feature_window: Sequence[Sequence[float]]) -> List[float]:
+        """Per-class softmax probabilities for a feature window (empty -> [])."""
+
+        if self.model is None:
+            self.load()
+        assert self.model is not None
+        return predict_proba_window(self.model, feature_window, self.feature_mean, self.feature_std)
 
 
 def print_model_metadata(metadata: dict) -> None:

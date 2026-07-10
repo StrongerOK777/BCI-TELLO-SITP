@@ -7,9 +7,10 @@ from pathlib import Path
 
 import numpy as np
 
+from bin.decoding import VoteWindow, gate_by_confidence
 from bin.eeg import BrainSignalReader, EEGSnapshot, FeatureWindowResult, WindowResult, build_feature_vector
 from bin.keyboard import KeyboardReader
-from bin.models import combine_feature_window
+from bin.models import FinalUnifiedModel, ModelPredictor, combine_feature_window
 from bin.transport import JsonHttpClient
 
 
@@ -32,6 +33,10 @@ def load_module(name: str, relative_path: str):
 car_brain = load_module("car_brain_control", "MI-CarControl/brain_control.py")
 drone_brain = load_module("drone_brain_control", "MI-DroneControl/brain_control.py")
 drone_hardware = load_module("drone_hardware_test", "MI-DroneControl/drone_hardware.py")
+# Load arm_hardware under its real name first so brain_control's
+# ``from arm_hardware import ...`` reuses this exact module object.
+arm_hardware = load_module("arm_hardware", "MI-DOFBOT/arm_hardware.py")
+arm_brain = load_module("arm_brain_control", "MI-DOFBOT/brain_control.py")
 
 
 class FakeReader:
@@ -52,14 +57,20 @@ class FakeReader:
 
 
 class FakePredictor:
-    def __init__(self, predictions=None, error=None):
+    def __init__(self, predictions=None, error=None, probas=None):
         self.predictions = list(predictions or [])
+        self.probas = list(probas or [])
         self.error = error
 
     def predict_window(self, _feature_window):
         if self.error is not None:
             raise self.error
         return self.predictions.pop(0)
+
+    def predict_proba(self, _feature_window):
+        if self.error is not None:
+            raise self.error
+        return self.probas.pop(0)
 
 
 class FakeSender:
@@ -146,6 +157,30 @@ class ModularCoreTests(unittest.TestCase):
 
         self.assertEqual(client.post_json("/signal", {"value": 1}), {"ok": True})
         self.assertEqual(session.calls, [("http://device.local/signal", {"value": 1}, 2.5)])
+
+    def test_gate_by_confidence_rejects_low_and_empty(self):
+        labels = ["left", "right", "rest"]
+        self.assertEqual(gate_by_confidence([0.8, 0.1, 0.1], labels, 0.5).intent, "left")
+        self.assertEqual(gate_by_confidence([0.4, 0.35, 0.25], labels, 0.5).intent, "rest")
+        self.assertEqual(gate_by_confidence([], labels, 0.5).intent, "rest")
+
+    def test_vote_window_requires_min_votes_and_ignores_lone_flip(self):
+        vote = VoteWindow(size=3, min_votes=2, idle_intent="rest")
+
+        self.assertEqual(vote.push("up"), "rest")   # 1 vote < min_votes
+        self.assertEqual(vote.push("up"), "up")     # 2 votes -> commit
+        self.assertEqual(vote.push("down"), "up")   # up=2 still beats lone down
+        self.assertEqual(vote.push("down"), "down")  # buffer [up,down,down]
+
+    def test_predict_proba_returns_distribution(self):
+        predictor = ModelPredictor(None, autoload=False)
+        predictor.model = FinalUnifiedModel(28)
+        predictor.model.eval()
+
+        probs = predictor.predict_proba([[1.0] * 14 for _ in range(30)])
+        self.assertEqual(len(probs), 3)
+        self.assertAlmostEqual(sum(probs), 1.0, places=5)
+        self.assertEqual(predictor.predict_proba([]), [])
 
 
 class CarBrainControlTests(unittest.TestCase):
@@ -240,6 +275,119 @@ class DroneControlTests(unittest.TestCase):
         controller.step()
 
         self.assertEqual(drone.actions, ["takeoff", "right", "forward"])
+
+
+class ArmBrainControlTests(unittest.TestCase):
+    def _config(self, **overrides):
+        params = dict(action_pause_sec=0, vote_window=1, vote_min=1)
+        params.update(overrides)
+        return arm_brain.ArmBrainConfig(**params)
+
+    def _controller(self, results, arm, predictor=None, **config_overrides):
+        return arm_brain.ArmBrainController(
+            self._config(**config_overrides),
+            FakeReader(results),
+            arm,
+            predictor or FakePredictor(),
+        )
+
+    def test_state_machine_cycles_modes_and_executes_actions(self):
+        arm = arm_hardware.SimulatedArmController()
+        results = [
+            WindowResult("升降", attention_count=30, meditation_count=0),  # arm_up
+            WindowResult("升降", blink_count=2),                            # -> 转弯
+            FeatureWindowResult("转弯", feature_window=[[1.0] * 14 for _ in range(30)]),  # left
+            FeatureWindowResult("转弯", blink_count=2),                     # -> 前后
+            WindowResult("前后", attention_count=0, meditation_count=30),   # arm_backward
+        ]
+        controller = self._controller(results, arm, FakePredictor(probas=[[0.9, 0.05, 0.05]]))
+
+        controller.step()
+        controller.step()
+        self.assertEqual(controller.mode, arm_brain.MODE_ROTATION)
+        controller.step()
+        controller.step()
+        self.assertEqual(controller.mode, arm_brain.MODE_FORWARD_BACKWARD)
+        controller.step()
+
+        self.assertEqual(arm.actions, ["arm_up", "base_left", "arm_backward"])
+
+    def test_single_blink_toggles_gripper(self):
+        arm = arm_hardware.SimulatedArmController()
+        results = [WindowResult("升降", blink_count=1), WindowResult("升降", blink_count=1)]
+        controller = self._controller(results, arm)
+
+        controller.step()
+        controller.step()
+
+        self.assertEqual(arm.actions, ["grip_open", "grip_close"])
+
+    def test_vote_window_suppresses_single_noisy_window(self):
+        arm = arm_hardware.SimulatedArmController()
+        results = [
+            WindowResult("升降", attention_count=30, meditation_count=0),  # up
+            WindowResult("升降", attention_count=30, meditation_count=0),  # up
+            WindowResult("升降", attention_count=0, meditation_count=30),  # lone down
+        ]
+        controller = self._controller(results, arm, vote_window=3, vote_min=2)
+
+        controller.step()
+        controller.step()
+        controller.step()
+
+        # first window is below the vote threshold, the lone "down" never wins.
+        self.assertEqual(arm.actions, ["arm_up", "arm_up"])
+
+    def test_rotation_confidence_gate_blocks_low_confidence(self):
+        arm = arm_hardware.SimulatedArmController()
+        results = [
+            FeatureWindowResult("转弯", feature_window=[[1.0] * 14 for _ in range(30)]),
+            FeatureWindowResult("转弯", feature_window=[[1.0] * 14 for _ in range(30)]),
+        ]
+        controller = self._controller(
+            results, arm, FakePredictor(probas=[[0.8, 0.1, 0.1], [0.4, 0.35, 0.25]])
+        )
+        controller.mode = arm_brain.MODE_ROTATION
+
+        controller.step()
+        controller.step()
+
+        self.assertEqual(arm.actions, ["base_left"])
+
+    def test_disconnect_homes_and_resets_mode(self):
+        arm = arm_hardware.SimulatedArmController()
+        results = [
+            FeatureWindowResult(
+                "转弯", valid=False, disconnected=True, poor_signal=200, reason="poorSignal=200"
+            )
+        ]
+        controller = self._controller(results, arm)
+        controller.mode = arm_brain.MODE_ROTATION
+
+        controller.step()
+
+        self.assertEqual(controller.mode, arm_brain.MODE_VERTICAL)
+        self.assertIn("home", arm.actions)
+
+    def test_invalid_window_without_disconnect_does_nothing(self):
+        arm = arm_hardware.SimulatedArmController()
+        results = [WindowResult("升降", valid=False, poor_signal=50, reason="poorSignal=50")]
+        controller = self._controller(results, arm)
+
+        controller.step()
+
+        self.assertEqual(arm.actions, [])
+
+    def test_run_connects_homes_and_closes(self):
+        arm = arm_hardware.SimulatedArmController()
+        results = [WindowResult("升降", attention_count=0, meditation_count=0)]
+        controller = self._controller(results, arm)
+
+        controller.run(max_windows=1)
+
+        self.assertEqual(arm.actions[0], "connect")
+        self.assertIn("home", arm.actions)
+        self.assertEqual(arm.actions[-1], "close")
 
 
 if __name__ == "__main__":

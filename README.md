@@ -308,6 +308,8 @@ python MI-DOFBOT/brain_control.py --dry-run
 python MI-DOFBOT/brain_control.py --arm-port COM4
 ```
 
+机械臂脑控逻辑：双眨眼在升降、转弯、前后三个模式间循环，单眨眼开合夹爪；升降/前后模式用注意力/冥想计数（带死区）判断方向，转弯模式用共享模型并做置信度门控；所有方向决策都经过多窗投票平滑，单个噪声窗口不会误动作。首次务必先 `--dry-run` 或 `--simulated`。
+
 <a name="future"></a>
 
 # 后续计划（Future Plan）：
