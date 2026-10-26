@@ -316,6 +316,7 @@ python MI-DOFBOT/brain_control.py --arm-port COM4
 
 - 保持 `bci_interface.py` 作为统一脑环接口，避免串口配置散落在各个程序中。
 - 继续优化 `TrainUser/` 的训练流程，让一次训练得到的模型可以更稳定地服务三类硬件。
+- 公开数据集测试结论见 [experiments/public_datasets/README.md](./experiments/public_datasets/README.md)：单通道前额脑环难以区分左 / 右手运动想象，适合专注度、任务 / 静息开关与眨眼指令。
 - 后续可以在现有架构上继续开发 SSVEP 控制方式。
 
 <a name="repo-structure"></a>
@@ -330,6 +331,8 @@ BCI-TELLO/
 │   ├── train_user.py                 # 采集数据并训练共享模型
 │   ├── neuropy.py                    # NeuroSky / MindWave 驱动
 │   └── README.md
+├── experiments/
+│   └── public_datasets/              # 公开数据集基准测试（Mendeley NeuroSky、PhysioNet 运动想象）
 ├── src/                              # 公共训练产物
 │   ├── data/                         # 训练数据
 │   ├── models/                       # 共享模型，默认 FinalModel.pth

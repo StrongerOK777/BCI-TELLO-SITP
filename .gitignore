@@ -58,3 +58,6 @@ Papers
 
 # agent-rules verification artifacts
 .agents/
+
+# public dataset downloads (experiments/public_datasets/datasets.py)
+experiments/public_datasets/data/

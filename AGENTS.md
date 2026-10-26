@@ -1,6 +1,6 @@
 <!-- FOR AI AGENTS - Human readability is a side effect, not a goal -->
 <!-- Managed by agent: keep sections and order; edit content, not structure -->
-<!-- Last updated: 2026-07-11 | Last verified: 2026-07-11 -->
+<!-- Last updated: 2026-10-26 | Last verified: 2026-10-26 -->
 
 # AGENTS.md
 
@@ -51,6 +51,7 @@ MI-DroneControl/       Tello: keyboard/brain control, predict.py, diagnose.py, d
 MI-DOFBOT/             DOFBOT arm: keyboard/brain control, arm_hardware.py, Arm_Lib
 Spaceinvaders/         Legacy EEG test game (Python 2.7 + 3.11)
 tests/                 unittest suite for bin/ core + controllers
+experiments/           Offline benchmarks on public EEG datasets (public_datasets/, data not committed)
 ```
 <!-- AGENTS-GENERATED:END filemap -->
 
