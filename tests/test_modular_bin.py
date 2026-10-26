@@ -9,6 +9,14 @@ from pathlib import Path
 import numpy as np
 
 from bin.decoding import FocusSteer, VoteWindow, gate_by_confidence
+from bin.evaluation import (
+    CueTrialResult,
+    build_cue_schedule,
+    format_summary_markdown,
+    run_cue_trial,
+    summarize,
+    wolpaw_itr,
+)
 from bin.eeg import BrainSignalReader, EEGSnapshot, FeatureWindowResult, WindowResult, build_feature_vector
 from bin.keyboard import KeyboardReader
 from bin.models import FinalUnifiedModel, ModelPredictor, combine_feature_window
@@ -271,6 +279,107 @@ class ModularCoreTests(unittest.TestCase):
 
         self.assertEqual([d.intent for d in decisions], ["left", "rest", "right", "rest", "rest"])
         self.assertEqual(steer.direction, "right")
+
+
+class FakeClock:
+    def __init__(self, step_sec=3.0):
+        self.now = 0.0
+        self.step_sec = step_sec
+
+    def __call__(self):
+        return self.now
+
+    def tick(self):
+        self.now += self.step_sec
+
+
+def scripted_trial(cue, moves, *, timeout, valid=None):
+    """Run run_cue_trial where window i emits moves[i] (None = no movement)."""
+
+    clock = FakeClock()
+    pending = list(moves)
+    valid = list(valid or [])
+    emitted = []
+
+    def step():
+        clock.tick()
+        emitted.append(pending.pop(0) if pending else None)
+        return valid.pop(0) if valid else True
+
+    def poll():
+        return emitted.pop() if emitted else None
+
+    return run_cue_trial(1, cue, step=step, poll_move=poll, timeout_sec=timeout, clock=clock)
+
+
+class CueEvaluationTests(unittest.TestCase):
+    def test_schedule_is_balanced_and_avoids_long_runs(self):
+        schedule = build_cue_schedule(10, seed=3, max_run=2)
+
+        self.assertEqual(sorted(schedule), sorted(["left", "right", "rest"] * 10))
+        self.assertTrue(all(len(set(schedule[i : i + 3])) > 1 for i in range(len(schedule) - 2)))
+        self.assertEqual(schedule, build_cue_schedule(10, seed=3, max_run=2))
+
+    def test_move_cue_outcomes_and_latency(self):
+        hit = scripted_trial("left", [None, "left"], timeout=15)
+        wrong = scripted_trial("left", ["right"], timeout=15)
+        timeout = scripted_trial("right", [None] * 10, timeout=15, valid=[True, False, True, True, True])
+
+        self.assertEqual((hit.outcome, hit.response, hit.latency_sec, hit.windows), ("correct", "left", 6.0, 2))
+        self.assertEqual((wrong.outcome, wrong.latency_sec), ("wrong", 3.0))
+        self.assertEqual((timeout.outcome, timeout.latency_sec, timeout.windows), ("timeout", None, 5))
+        self.assertEqual(timeout.invalid_windows, 1)
+
+    def test_rest_cue_must_hold_still_for_the_whole_period(self):
+        held = scripted_trial("rest", [None, None, None], timeout=9)
+        moved = scripted_trial("rest", [None, "right"], timeout=9)
+
+        self.assertEqual((held.outcome, held.windows, held.duration_sec), ("correct", 3, 9.0))
+        self.assertEqual((moved.outcome, moved.response), ("false_move", "right"))
+
+    def test_movement_emitted_before_the_cue_is_ignored(self):
+        stale = ["left"]
+        clock = FakeClock()
+
+        def step():
+            clock.tick()
+
+        result = run_cue_trial(
+            1, "rest", step=step, poll_move=lambda: stale.pop() if stale else None, timeout_sec=6, clock=clock
+        )
+
+        self.assertEqual(result.outcome, "correct")
+
+    def test_wolpaw_itr_reference_values(self):
+        self.assertAlmostEqual(wolpaw_itr(2, 1.0, 60.0), 1.0)
+        self.assertEqual(wolpaw_itr(3, 1 / 3, 6.0), 0.0)
+        # 3 classes, 90% accuracy, 6 s per selection
+        bits = 1.58496 + 0.9 * -0.15200 + 0.1 * -4.32193
+        self.assertAlmostEqual(wolpaw_itr(3, 0.9, 6.0), bits * 10, places=3)
+
+    def test_summary_counts_confusion_and_markdown(self):
+        results = [
+            CueTrialResult(1, "left", "correct", "left", 4.0, 4.0, 2),
+            CueTrialResult(2, "left", "wrong", "right", 3.0, 3.0, 1),
+            CueTrialResult(3, "right", "correct", "right", 6.0, 6.0, 2),
+            CueTrialResult(4, "right", "timeout", None, None, 15.0, 5, invalid_windows=1),
+            CueTrialResult(5, "rest", "correct", None, None, 9.0, 3),
+            CueTrialResult(6, "rest", "false_move", "left", 3.0, 3.0, 1),
+        ]
+
+        summary = summarize(results)
+
+        self.assertEqual((summary["n_trials"], summary["correct"]), (6, 3))
+        self.assertAlmostEqual(summary["accuracy"], 0.5)
+        self.assertEqual(summary["per_cue"]["left"]["mean_latency_sec"], 4.0)
+        self.assertEqual(summary["per_cue"]["rest"]["outcomes"], {"correct": 1, "false_move": 1})
+        self.assertEqual(summary["confusion"]["right"], {"left": 0, "right": 1, "none": 1})
+        self.assertEqual(summary["mean_move_latency_sec"], 5.0)
+        self.assertEqual((summary["invalid_windows"], summary["total_windows"]), (1, 14))
+        self.assertFalse(summary["significant"])
+        markdown = format_summary_markdown(summary)
+        self.assertIn("| 左转 | 2 | 1 | 50.0% |", markdown)
+        self.assertIn("误动作 1", markdown)
 
 
 class CarBrainControlTests(unittest.TestCase):
