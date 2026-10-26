@@ -32,7 +32,7 @@
       "n_trials": 160,
       "classes": 2,
       "chance": 0.5,
-      "sig_threshold_trials": 0.5625,
+      "sig_threshold_trials": 0.56875,
       "FinalUnifiedModel": {
         "random_window_split": {
           "acc": 0.9587628865979382,
@@ -89,7 +89,7 @@
       "n_trials": 120,
       "classes": 3,
       "chance": 0.3333333333333333,
-      "sig_threshold_trials": 0.4083333333333333,
+      "sig_threshold_trials": 0.4166666666666667,
       "FinalUnifiedModel": {
         "random_window_split": {
           "acc": 0.863013698630137,
@@ -1602,7 +1602,7 @@
         ]
       }
     },
-    "within_subject_lr_sig_threshold": 0.6222222222222222,
+    "within_subject_lr_sig_threshold": 0.6444444444444445,
     "within_subject_lr_trials_per_subject": 45,
     "cross_subject": {
       "left_right/FP1/FinalUnifiedModel": {

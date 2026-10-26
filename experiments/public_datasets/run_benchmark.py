@@ -23,7 +23,6 @@ from typing import Callable, Dict, List, Sequence, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from scipy.stats import binom
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -39,7 +38,7 @@ for path in (ROOT_DIR, HERE):
         sys.path.insert(0, str(path))
 
 from bin.models import FinalUnifiedModel, combine_feature_window  # noqa: E402
-from bin.training import stratified_split  # noqa: E402
+from bin.training import significance_threshold, stratified_split  # noqa: E402
 from datasets import DEFAULT_DATA_DIR, Trial, load_mendeley, load_physionet  # noqa: E402
 
 SEED = 42
@@ -158,9 +157,9 @@ def fit_predict(model_name, X_train, y_train, X_test):
 # ---------------------------------------------------------------------------
 
 def chance_threshold(n: int, k: int, alpha: float = 0.05) -> float:
-    """Smallest accuracy significantly above 1/k chance for n test trials (binomial)."""
+    """Smallest accuracy significantly above 1/k chance for n test trials (exact binomial tail)."""
 
-    return float(binom.ppf(1 - alpha, n, 1.0 / k) / n)
+    return significance_threshold(n, k, alpha)
 
 
 def score(y_true, y_pred) -> Dict[str, float]:
