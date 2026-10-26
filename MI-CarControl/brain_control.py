@@ -17,8 +17,9 @@ if str(ROOT_DIR) not in sys.path:
 if str(DEVICE_DIR) not in sys.path:
     sys.path.insert(0, str(DEVICE_DIR))
 
+from bin.decoding import FocusSteer
 from bin.eeg import BrainSignalReader, FeatureWindowResult, WindowResult
-from bin.models import LABELS, ModelPredictor
+from bin.models import LABELS, ModelPredictor, report_model
 from bci_interface import get_mindwave_interface
 from keyboard_control import CarSignalClient
 
@@ -29,6 +30,8 @@ MODE_NAMES = {
     MODE_FORWARD_BACKWARD: "前后",
     MODE_TURNING: "转向",
 }
+DIRECTION_NAMES = {"left": "左", "right": "右"}
+TURN_SIGNALS = {"left": "左转", "right": "右转", "rest": "停止"}
 DEFAULT_MODEL_PATH = ROOT_DIR / "src" / "models" / "FinalModel.pth"
 DEFAULT_INTERFACE = get_mindwave_interface(neuropy_dir=DEVICE_DIR)
 
@@ -52,6 +55,9 @@ class CarBrainConfig:
     poor_signal_threshold: int = 20
     mode_switch_blinks: int = 2
     min_decision_count: int = 20
+    # 转向模式信号来源："rule" = 专注执行、单眨眼换方向；"model" = FinalModel.pth
+    turning_source: str = "rule"
+    focus_threshold: int = 55
 
 
 class CarBrainController:
@@ -68,11 +74,19 @@ class CarBrainController:
         self.sender = sender
         self.mode = MODE_FORWARD_BACKWARD
         self.running = False
+        self.steer = FocusSteer(
+            ("left", "right"),
+            focus_threshold=config.focus_threshold,
+            min_focus_count=config.min_decision_count,
+            idle_intent="rest",
+        )
 
     def run(self, max_windows: Optional[int] = None) -> None:
         self.running = True
         seen = 0
         try:
+            if self.config.turning_source == "model":
+                report_model(self.predictor)
             self.reader.start()
             while self.running:
                 self.step()
@@ -88,7 +102,7 @@ class CarBrainController:
         mode_name = MODE_NAMES[self.mode]
         result = (
             self.reader.collect_feature_window(mode_name)
-            if self.mode == MODE_TURNING
+            if self.mode == MODE_TURNING and self.config.turning_source == "model"
             else self.reader.collect_rule_window(mode_name)
         )
         if not result.valid:
@@ -129,6 +143,9 @@ class CarBrainController:
             self.mode = MODE_FORWARD_BACKWARD
             print("双眨眼：切换到前后模式")
             return
+        if self.config.turning_source != "model":
+            self.handle_focus_turning(result)
+            return
         if not isinstance(result, FeatureWindowResult):
             print("当前窗口缺少模型特征，仅报警不发送动作")
             return
@@ -139,7 +156,15 @@ class CarBrainController:
             return
         label = LABELS[predicted]
         print(f"模型预测：{label}")
-        self._send({"left": "左转", "right": "右转", "rest": "停止"}[label])
+        self._send(TURN_SIGNALS[label])
+
+    def handle_focus_turning(self, result: WindowResult) -> None:
+        decision = self.steer.decide([s.attention for s in result.samples], result.blink_count)
+        print(f"转向模式 | 当前方向：{DIRECTION_NAMES[self.steer.direction]} | {decision.reason}")
+        if result.blink_count == 1:
+            print(f"单眨眼：方向切换为{DIRECTION_NAMES[self.steer.direction]}，本窗口不动作")
+            return
+        self._send(TURN_SIGNALS[decision.intent])
 
     def _send(self, signal: str) -> None:
         try:
@@ -190,6 +215,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--meditation-threshold", type=int, default=50)
     parser.add_argument("--blink-threshold", type=int, default=100)
     parser.add_argument("--poor-signal-threshold", type=int, default=20)
+    parser.add_argument("--turning-source", choices=["rule", "model"], default="rule",
+                        help="转向模式信号来源：rule=专注执行、单眨眼换方向；model=FinalModel.pth")
+    parser.add_argument("--focus-threshold", type=int, default=55, help="转向模式中算作专注的 attention 值")
     parser.add_argument("--test-brain", action="store_true", help="仅读取脑环信号，不连接小车")
     parser.add_argument("--dry-run", action="store_true", help="模拟控制命令，不连接真实小车")
     return parser
@@ -207,6 +235,8 @@ def config_from_args(args: argparse.Namespace) -> CarBrainConfig:
         meditation_threshold=args.meditation_threshold,
         blink_threshold=args.blink_threshold,
         poor_signal_threshold=args.poor_signal_threshold,
+        turning_source=args.turning_source,
+        focus_threshold=args.focus_threshold,
     )
 
 
@@ -266,6 +296,12 @@ def test_brain_signal_mode(args: argparse.Namespace) -> int:
                     f"Attention: {result.attention_count}, "
                     f"Meditation: {result.meditation_count}, "
                     f"Blinks: {result.blink_count}"
+                )
+                attention = sorted(s.attention for s in result.samples)
+                focused = sum(1 for value in attention if value >= args.focus_threshold)
+                print(
+                    f"      专注采样 ≥ {args.focus_threshold}: {focused}/{len(attention)}，"
+                    f"attention 中位数: {attention[len(attention) // 2] if attention else 0}"
                 )
             else:
                 print(f"[{count}] ✗ 无效窗口 | 原因: {result.reason}")

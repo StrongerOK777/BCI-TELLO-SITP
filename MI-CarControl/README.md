@@ -7,7 +7,7 @@
 | 文件 | 用途 |
 |---|---|
 | `keyboard_control.py` | 通过键盘向小车 HTTP 接口发送前进、后退、左转、右转和停止指令。 |
-| `brain_control.py` | 通过脑环控制小车；前后模式使用注意力/冥想规则，转向模式使用共享模型。 |
+| `brain_control.py` | 通过脑环控制小车；前后模式使用注意力/冥想规则，转向模式默认“专注执行、单眨眼换方向”，可选共享模型。 |
 | `test_brain.py` | 独立脑环信号测试脚本，不连接小车，用于排查串口和信号质量问题。 |
 | `neuropy.py` | 小车侧 NeuroSky / MindWave 驱动副本。 |
 | `README.md` | 本说明文件。 |
@@ -38,10 +38,10 @@ python MI-CarControl/keyboard_control.py --host 192.168.149.1 --port 5000
 python MI-CarControl/brain_control.py
 ```
 
-默认读取共享模型：
+转向模式默认不使用模型。如需改用共享模型 `src/models/FinalModel.pth`：
 
-```text
-src/models/FinalModel.pth
+```bash
+python MI-CarControl/brain_control.py --turning-source model
 ```
 
 脑控逻辑：
@@ -49,7 +49,9 @@ src/models/FinalModel.pth
 - 默认进入前后模式。
 - 双眨眼切换“前后模式 / 转向模式”。
 - 前后模式：注意力更高则前进，冥想更高则后退。
-- 转向模式：模型预测 `left / right / rest`，对应左转、右转、停止。
+- 转向模式（默认 `--turning-source rule`）：单眨眼在左/右之间切换当前方向（本窗口不动作），窗口内足够多的采样 attention ≥ `--focus-threshold`（默认 55）时向当前方向转一次，专注不足则停止。
+- 转向模式（`--turning-source model`）：模型预测 `left / right / rest`，对应左转、右转、停止；启动时会打印模型的分组测试准确率和显著性阈值。
+- `--test-brain` 会额外打印每个窗口中 attention ≥ 专注阈值的采样数和 attention 中位数，用来为自己校准 `--focus-threshold`。
 - 信号质量差或模型不可用时，只报警，不主动发送新动作。
 
 ## 脑环诊断

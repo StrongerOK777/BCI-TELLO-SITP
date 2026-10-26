@@ -9,6 +9,9 @@ dependency-free (stdlib only) so they stay fast and fully unit-testable:
   falling back to a reject/idle intent when the top probability is too low.
 * :class:`VoteWindow` — sliding-window majority vote that adds temporal
   hysteresis so a single noisy window cannot move the hardware.
+* :class:`FocusSteer` — "focus to act, blink to steer": a single blink flips
+  the selected direction, sustained high attention executes it. Uses only the
+  signals a single frontal electrode measures reliably.
 
 The intent strings are opaque to this module: each device chooses its own
 vocabulary (e.g. ``"base_left"`` for the arm, ``"left"`` for the car) and only
@@ -100,3 +103,54 @@ class VoteWindow:
 
     def reset(self) -> None:
         self._buffer.clear()
+
+
+class FocusSteer:
+    """Two-signal steering: blink selects the direction, focus executes it.
+
+    The selected direction starts at ``directions[0]`` and persists across
+    windows. :meth:`decide` takes one window's per-sample attention values and
+    its debounced blink count:
+
+    * exactly one blink flips the direction and returns the idle intent (a
+      selection, not a move);
+    * otherwise, if at least ``min_focus_count`` samples reach
+      ``focus_threshold``, the current direction is returned;
+    * otherwise the idle intent is returned.
+
+    Multi-blink gestures (e.g. a mode switch) are the caller's to handle first.
+    """
+
+    def __init__(
+        self,
+        directions: Sequence[str] = ("left", "right"),
+        *,
+        focus_threshold: int = 55,
+        min_focus_count: int = 20,
+        idle_intent: str = "rest",
+    ) -> None:
+        if len(directions) != 2:
+            raise ValueError("FocusSteer needs exactly two directions")
+        self.directions = tuple(directions)
+        self.focus_threshold = int(focus_threshold)
+        self.min_focus_count = max(1, int(min_focus_count))
+        self.idle_intent = idle_intent
+        self._index = 0
+
+    @property
+    def direction(self) -> str:
+        return self.directions[self._index]
+
+    def flip(self) -> str:
+        self._index = 1 - self._index
+        return self.direction
+
+    def decide(self, attention_values: Sequence[int], blink_count: int = 0) -> Decision:
+        if blink_count == 1:
+            direction = self.flip()
+            return Decision(self.idle_intent, 1.0, f"blink -> direction {direction}")
+        focused = sum(1 for value in attention_values if value >= self.focus_threshold)
+        detail = f"focus {focused}/{len(attention_values)} (>= {self.focus_threshold})"
+        if focused >= self.min_focus_count:
+            return Decision(self.direction, focused / max(1, len(attention_values)), detail)
+        return Decision(self.idle_intent, focused / max(1, len(attention_values)), detail)

@@ -9,10 +9,14 @@ behind ``arm_hardware.ArmDevice`` so tests inject a recording
 ``SimulatedArmController``.
 
 Decoding pipeline (EEG window -> arm command):
-  1. blink events are discrete: 2 blinks cycle the mode, 1 blink toggles grip.
+  1. blink events are discrete: 2 blinks cycle the mode; 1 blink toggles grip,
+     except in 转弯 mode with ``turning_source="rule"`` where it flips the
+     rotation direction instead.
   2. otherwise a per-mode decoder emits a *raw* intent:
        - 升降 / 前后 modes: attention vs meditation with a dead-band -> rest
-       - 转弯 mode: the shared model, gated by softmax confidence -> rest band
+       - 转弯 mode (default ``rule``): ``bin.decoding.FocusSteer`` - sustained
+         focus rotates toward the selected direction, otherwise rest
+       - 转弯 mode (``model``): the shared model, gated by softmax confidence
   3. the raw intent passes through a majority-vote window (hysteresis) so a
      single noisy window cannot move the servos; only a committed intent acts.
 """
@@ -33,9 +37,9 @@ if str(ROOT_DIR) not in sys.path:
 if str(DEVICE_DIR) not in sys.path:
     sys.path.insert(0, str(DEVICE_DIR))
 
-from bin.decoding import VoteWindow, gate_by_confidence
+from bin.decoding import FocusSteer, VoteWindow, gate_by_confidence
 from bin.eeg import BrainSignalReader, FeatureWindowResult, WindowResult
-from bin.models import LABELS, ModelPredictor
+from bin.models import LABELS, ModelPredictor, report_model
 from bci_interface import get_mindwave_interface
 from arm_hardware import ArmController, ArmDevice, SimulatedArmController
 
@@ -57,6 +61,7 @@ MODE_COUNT = len(MODE_NAMES)
 
 # Maps the model's class labels to the arm intents used in 转弯 (rotation) mode.
 ROTATION_INTENTS = {"left": "base_left", "right": "base_right", "rest": IDLE_INTENT}
+DIRECTION_NAMES = {"left": "左", "right": "右"}
 
 
 @dataclass
@@ -89,6 +94,9 @@ class ArmBrainConfig:
     vote_window: int = 3
     vote_min: int = 2
     action_pause_sec: float = 0.2
+    # 转弯模式信号来源："rule" = 专注执行、单眨眼换方向；"model" = FinalModel.pth
+    turning_source: str = "rule"
+    focus_threshold: int = 55
 
 
 class ArmBrainController:
@@ -111,11 +119,19 @@ class ArmBrainController:
             min_votes=config.vote_min,
             idle_intent=IDLE_INTENT,
         )
+        self.steer = FocusSteer(
+            ("left", "right"),
+            focus_threshold=config.focus_threshold,
+            min_focus_count=config.min_decision_count,
+            idle_intent=IDLE_INTENT,
+        )
 
     def run(self, max_windows: Optional[int] = None) -> None:
         self.running = True
         seen = 0
         try:
+            if self.config.turning_source == "model":
+                report_model(self.predictor)
             self.arm.connect()
             self.arm.home()
             self.reader.start()
@@ -133,7 +149,7 @@ class ArmBrainController:
     def step(self) -> None:
         mode_name = MODE_NAMES[self.mode]
         print(f"{mode_name}：")
-        if self.mode == MODE_ROTATION:
+        if self.mode == MODE_ROTATION and self.config.turning_source == "model":
             result = self.reader.collect_feature_window(mode_name)
         else:
             result = self.reader.collect_rule_window(mode_name)
@@ -146,7 +162,10 @@ class ArmBrainController:
             self.switch_mode()
             return
         if result.blink_count == 1:
-            self.toggle_gripper()
+            if self.mode == MODE_ROTATION and self.config.turning_source != "model":
+                self.flip_direction()
+            else:
+                self.toggle_gripper()
             return
 
         raw_intent = self.decode_intent(result)
@@ -162,6 +181,11 @@ class ArmBrainController:
         self.mode = (self.mode + 1) % MODE_COUNT
         self._vote.reset()
         print(f"双眨眼：{MODE_NAMES[old_mode]} → {MODE_NAMES[self.mode]}")
+
+    def flip_direction(self) -> None:
+        direction = self.steer.flip()
+        self._vote.reset()
+        print(f"单眨眼：旋转方向切换为{DIRECTION_NAMES[direction]}，本窗口不动作")
 
     def toggle_gripper(self) -> None:
         if self.gripper_open:
@@ -193,6 +217,10 @@ class ArmBrainController:
         return IDLE_INTENT
 
     def decode_rotation(self, result: WindowResult) -> str:
+        if self.config.turning_source != "model":
+            decision = self.steer.decide([s.attention for s in result.samples])
+            print(f"当前方向：{DIRECTION_NAMES[self.steer.direction]}（{decision.reason}）")
+            return ROTATION_INTENTS.get(decision.intent, IDLE_INTENT)
         if not isinstance(result, FeatureWindowResult) or not result.feature_window:
             return IDLE_INTENT
         try:
@@ -304,6 +332,12 @@ def run_brain_signal_test(config: ArmBrainConfig) -> int:
                     f"Meditation: {result.meditation_count}, "
                     f"Blinks: {result.blink_count}"
                 )
+                attention = sorted(s.attention for s in result.samples)
+                focused = sum(1 for value in attention if value >= config.focus_threshold)
+                print(
+                    f"      专注采样 ≥ {config.focus_threshold}: {focused}/{len(attention)}，"
+                    f"attention 中位数: {attention[len(attention) // 2] if attention else 0}"
+                )
             else:
                 print(f"[{count}] ✗ 无效窗口 | 原因: {result.reason}")
     except KeyboardInterrupt:
@@ -342,6 +376,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--confidence-threshold", type=float, default=0.5)
     parser.add_argument("--vote-window", type=int, default=3)
     parser.add_argument("--vote-min", type=int, default=2)
+    parser.add_argument("--turning-source", choices=["rule", "model"], default="rule",
+                        help="转弯模式信号来源：rule=专注执行、单眨眼换方向；model=FinalModel.pth")
+    parser.add_argument("--focus-threshold", type=int, default=55, help="转弯模式中算作专注的 attention 值")
     return parser
 
 
@@ -368,6 +405,8 @@ def config_from_args(args: argparse.Namespace) -> ArmBrainConfig:
         confidence_threshold=args.confidence_threshold,
         vote_window=args.vote_window,
         vote_min=args.vote_min,
+        turning_source=args.turning_source,
+        focus_threshold=args.focus_threshold,
     )
 
 
