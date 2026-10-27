@@ -15,7 +15,7 @@ python experiments/public_datasets/run_benchmark.py
 python experiments/public_datasets/make_figures.py
 ```
 
-可选参数：`--only own|mendeley|physionet`、`--subjects N`（只用前 N 名 PhysioNet 被试）、`--data-dir <目录>`。数据目录 `data/` 已加入 `.gitignore`。不引入新依赖：EDF 读取和 NeuroSky 频段计算都用 numpy 实现，评测使用已安装的 torch / scikit-learn / scipy。
+可选参数：`--only own|mendeley|physionet|csp`（`csp` 只重跑下面第 4 节的电极布局对比，约 15 秒，并合并进 `results.json`）、`--subjects N`（只用前 N 名 PhysioNet 被试）、`--data-dir <目录>`。数据目录 `data/` 已加入 `.gitignore`。不引入新依赖：EDF 读取和 NeuroSky 频段计算都用 numpy 实现，评测使用已安装的 torch / scikit-learn / scipy。
 
 ## 使用的数据集
 
@@ -79,16 +79,35 @@ python experiments/public_datasets/make_figures.py
 
 Mendeley 数据中，NeuroSky 的 attention 值在专注时中位数约 70，走神时约 40；走神时 delta 功率明显升高（很可能来自眼动）。这直接支持项目里"attention / meditation 控制前后、升降"的规则模式，以及"眨眼切换模式"的设计。
 
+### 4. 换设备能不能做左 / 右手？电极布局决定上限
+
+![headset](figures/headset_options.png)
+
+用同一套 CSP（8–30 Hz，提示后 0.5–4 秒）+ LDA，只改可用的电极，在 PhysioNet 105 人上做被试内 5 折评测。团队现有的 Emotiv EPOC X 的 14 个电极位置在 64 导数据中都有，可以直接模拟。
+
+| 电极布局 | 平均准确率 | 达到 64.4% 显著线的人数 | 与 MindWave Fp1 相比（Wilcoxon 配对检验） |
+|---|---|---|---|
+| MindWave，Fp1 单通道 | 51.3% | 9 / 105 | — |
+| Emotiv 中最靠近运动区的 FC5 + FC6 | 51.1% | 17 / 105 | 无差异（p = 0.93） |
+| C3 + C4 两电极 | 56.6% | 26 / 105 | 更好（p = 0.003） |
+| **Emotiv EPOC X 全部 14 导** | **57.5%** | 34 / 105 | 更好（p < 0.001） |
+| **C3 + Cz + C4 三电极** | **61.6%** | 42 / 105 | 更好（p < 0.001），且优于 Emotiv 14 导（p = 0.01） |
+| 64 导（实验室上限） | 62.6% | 44 / 105 | 更好（p < 0.001） |
+
+- **Emotiv EPOC X 能比脑环好一些，但有限。** 它没有中央区（C3 / Cz / C4）电极，FC5 / FC6 单独用和脑环一样接近随机。14 导合起来平均 57.5%，只有约 1/3 的人能达到显著水平。
+- **运动想象的关键是中央区，电极数量是次要的。** 只要在 C3、Cz、C4 各放一个电极，就几乎达到 64 导的水平（61.6% vs 62.6%）。如果要做真正的左 / 右手想象，性价比最高的是 3 通道中央区设备（例如 OpenBCI Ganglion 一类的 4 通道板加 C3 / Cz / C4 电极），而不是更多的前额或颞区电极。
+- 即使是 64 导，每人 45 个试次的平均准确率也只有约 63%，而且个体差异很大（2 成以上的人超过 75%，也有不少人接近随机）。运动想象需要较多训练数据和用户练习，这和文献中"BCI 盲"现象一致。
+
 ## 局限与说明
 
 - Mendeley 只有 2 名被试，且不同条件在不同时段录制，注视方向的结果可能混入了时段差异，只能作为初步证据。
-- PhysioNet 是 64 导湿电极，信噪比好于干电极脑环；如果在这里单通道都做不到，真实脑环只会更难。
+- PhysioNet 是 64 导湿电极，信噪比好于干电极脑环；如果在这里单通道都做不到，真实脑环只会更难。Emotiv EPOC X 用盐水海绵电极、采样率 128 / 256 Hz，第 4 节的数字应视为它的**乐观上限**。
 - PhysioNet 的"任务 vs 静息"包含屏幕提示带来的视觉 / 注意力变化，不一定是纯粹的运动想象信号。
 - 模拟的频段功率只在量纲上与 ThinkGear 不同（训练时都做 z-score 标准化），attention / meditation 无法复现。
 
 ## 对项目的建议
 
-1. **修正评测方式**：`train_user.py` 改为按录制片段划分训练 / 测试集，并让训练窗口和在线窗口一致（都用 3 秒）。否则 98% 的准确率会让答辩评委产生误解。
-2. **把控制信号改成脑环擅长的**：用 attention（专注度）做连续量控制、用"任务 vs 静息"做开关、用眨眼 / 双眨眼做离散指令，把左 / 右的判别交给眼动（EOG）或眨眼序列，而不是运动想象。
+1. **评测方式**：`train_user.py` 已改为按采集轮次划分训练 / 测试集，训练窗口与在线窗口一致（3 秒），并报告显著性阈值，详见 [TrainUser/README.md](../../TrainUser/README.md)。
+2. **控制信号用脑环擅长的**：三个设备的转弯模式默认是"专注执行、单眨眼换方向"（`bin.decoding.FocusSteer`），运动想象模型改为 `--turning-source model` 可选；在线效果用 [口令测试](../online_cue_test/README.md) 记录。
 3. **读取原始信号**：脑环本身以 512 Hz 输出 rawValue，但目前每 0.1 秒才读一次。直接采集原始波形可以自己算更细的频谱，也能检测眼动方向。
-4. **如果坚持做左 / 右运动想象**：需要至少在 C3、C4 放电极（例如 OpenBCI / 双通道 TGAM 改装），本目录的脚本可以直接复用来评估。
+4. **如果坚持做左 / 右运动想象**：按第 4 节，优先选能放 C3 / Cz / C4 的设备；Emotiv EPOC X 可作为过渡（约 57%），本目录的脚本可以直接复用来评估。
