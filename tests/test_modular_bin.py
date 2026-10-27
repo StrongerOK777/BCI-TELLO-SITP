@@ -2,15 +2,32 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-from bin.decoding import VoteWindow, gate_by_confidence
+from bin.decoding import FocusSteer, VoteWindow, gate_by_confidence
+from bin.evaluation import (
+    CueTrialResult,
+    build_cue_schedule,
+    format_summary_markdown,
+    run_cue_trial,
+    summarize,
+    wolpaw_itr,
+)
 from bin.eeg import BrainSignalReader, EEGSnapshot, FeatureWindowResult, WindowResult, build_feature_vector
 from bin.keyboard import KeyboardReader
 from bin.models import FinalUnifiedModel, ModelPredictor, combine_feature_window
+from bin.training import (
+    RecordedTrial,
+    feature_stats,
+    load_trials,
+    significance_threshold,
+    trial_grouped_split,
+    trial_windows,
+)
 from bin.transport import JsonHttpClient
 
 
@@ -37,6 +54,20 @@ drone_hardware = load_module("drone_hardware_test", "MI-DroneControl/drone_hardw
 # ``from arm_hardware import ...`` reuses this exact module object.
 arm_hardware = load_module("arm_hardware", "MI-DOFBOT/arm_hardware.py")
 arm_brain = load_module("arm_brain_control", "MI-DOFBOT/brain_control.py")
+
+
+def focus_window(mode_name, attention, *, blink_count=0, samples=30):
+    """A rule window whose per-sample attention is constant (for FocusSteer)."""
+
+    return WindowResult(
+        mode_name,
+        blink_count=blink_count,
+        samples=[EEGSnapshot(attention=attention, meditation=50) for _ in range(samples)],
+    )
+
+
+def feature_line(timestamp, attention=50):
+    return f"{timestamp:.2f},{attention}|50|1000|1000|500|500|500|500|200|100|0|0"
 
 
 class FakeReader:
@@ -183,6 +214,174 @@ class ModularCoreTests(unittest.TestCase):
         self.assertEqual(predictor.predict_proba([]), [])
 
 
+    def test_load_trials_splits_on_gap_session_reset_and_max_rows(self):
+        times = [0.0, 0.1, 0.2, 3.5, 3.6, 1.0, 1.1, 1.2, 1.3]  # gap, then a new session
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "left.txt"
+            path.write_text("\n".join(feature_line(t) for t in times) + "\nbad line\n")
+            trials = load_trials(path, 0, max_rows=3)
+
+        self.assertEqual([len(t.rows) for t in trials], [3, 2, 3, 1])
+        self.assertEqual([t.start_time for t in trials], [0.0, 3.5, 1.0, 1.3])
+        self.assertTrue(all(t.label == 0 and t.rows.shape[1] == 14 for t in trials))
+
+    def test_trial_grouped_split_keeps_trials_whole_and_tests_every_class(self):
+        trials = [
+            RecordedTrial(label, np.full((30, 14), float(label * 100 + i), dtype=np.float32), float(i))
+            for label in range(3)
+            for i in range(10)
+        ]
+        train, val, test = trial_grouped_split(trials, seed=0)
+
+        ids = lambda items: {id(t) for t in items}  # noqa: E731
+        self.assertEqual(len(ids(train) | ids(val) | ids(test)), len(trials))
+        self.assertFalse(ids(train) & ids(test) or ids(train) & ids(val) or ids(val) & ids(test))
+        self.assertEqual(sorted({t.label for t in test}), [0, 1, 2])
+        self.assertEqual(sorted({t.label for t in val}), [0, 1, 2])
+
+    def test_trial_windows_never_cross_trials(self):
+        first = RecordedTrial(0, np.zeros((40, 14), dtype=np.float32), 0.0)
+        second = RecordedTrial(1, np.ones((30, 14), dtype=np.float32), 5.0)
+        too_short = RecordedTrial(2, np.ones((10, 14), dtype=np.float32), 9.0)
+
+        samples = trial_windows([first, second, too_short], window_size=30, stride=5)
+
+        self.assertEqual([label for _, label in samples], [0, 0, 0, 1])
+        for features, label in samples:
+            np.testing.assert_allclose(features[:14], float(label))  # pure per-trial mean
+            np.testing.assert_allclose(features[14:], 0.0)  # no mixing -> zero std
+
+    def test_significance_threshold_matches_exact_binomial_tail(self):
+        self.assertAlmostEqual(significance_threshold(45, 2), 29 / 45)
+        self.assertAlmostEqual(significance_threshold(160, 2), 91 / 160)
+        self.assertAlmostEqual(significance_threshold(120, 3), 50 / 120)
+        self.assertAlmostEqual(significance_threshold(5, 3), 4 / 5)
+        self.assertEqual(significance_threshold(0, 3), 1.0)
+
+    def test_feature_stats_use_raw_training_vectors(self):
+        samples = [(np.array([1000.0, 2.0]), 0), (np.array([3000.0, 4.0]), 1)]
+
+        mean, std = feature_stats(samples)
+
+        np.testing.assert_allclose(mean, [2000.0, 3.0])
+        np.testing.assert_allclose(std, [1000.0, 1.0])
+
+    def test_focus_steer_blink_flips_and_focus_executes(self):
+        steer = FocusSteer(("left", "right"), focus_threshold=55, min_focus_count=20)
+
+        decisions = [
+            steer.decide([70] * 30),           # focused -> current direction
+            steer.decide([70] * 30, 1),        # single blink -> flip, no move
+            steer.decide([70] * 30),           # focused -> new direction
+            steer.decide([70] * 19 + [40] * 11),  # 19 < 20 focused samples -> idle
+            steer.decide([]),                  # no samples -> idle
+        ]
+
+        self.assertEqual([d.intent for d in decisions], ["left", "rest", "right", "rest", "rest"])
+        self.assertEqual(steer.direction, "right")
+
+
+class FakeClock:
+    def __init__(self, step_sec=3.0):
+        self.now = 0.0
+        self.step_sec = step_sec
+
+    def __call__(self):
+        return self.now
+
+    def tick(self):
+        self.now += self.step_sec
+
+
+def scripted_trial(cue, moves, *, timeout, valid=None):
+    """Run run_cue_trial where window i emits moves[i] (None = no movement)."""
+
+    clock = FakeClock()
+    pending = list(moves)
+    valid = list(valid or [])
+    emitted = []
+
+    def step():
+        clock.tick()
+        emitted.append(pending.pop(0) if pending else None)
+        return valid.pop(0) if valid else True
+
+    def poll():
+        return emitted.pop() if emitted else None
+
+    return run_cue_trial(1, cue, step=step, poll_move=poll, timeout_sec=timeout, clock=clock)
+
+
+class CueEvaluationTests(unittest.TestCase):
+    def test_schedule_is_balanced_and_avoids_long_runs(self):
+        schedule = build_cue_schedule(10, seed=3, max_run=2)
+
+        self.assertEqual(sorted(schedule), sorted(["left", "right", "rest"] * 10))
+        self.assertTrue(all(len(set(schedule[i : i + 3])) > 1 for i in range(len(schedule) - 2)))
+        self.assertEqual(schedule, build_cue_schedule(10, seed=3, max_run=2))
+
+    def test_move_cue_outcomes_and_latency(self):
+        hit = scripted_trial("left", [None, "left"], timeout=15)
+        wrong = scripted_trial("left", ["right"], timeout=15)
+        timeout = scripted_trial("right", [None] * 10, timeout=15, valid=[True, False, True, True, True])
+
+        self.assertEqual((hit.outcome, hit.response, hit.latency_sec, hit.windows), ("correct", "left", 6.0, 2))
+        self.assertEqual((wrong.outcome, wrong.latency_sec), ("wrong", 3.0))
+        self.assertEqual((timeout.outcome, timeout.latency_sec, timeout.windows), ("timeout", None, 5))
+        self.assertEqual(timeout.invalid_windows, 1)
+
+    def test_rest_cue_must_hold_still_for_the_whole_period(self):
+        held = scripted_trial("rest", [None, None, None], timeout=9)
+        moved = scripted_trial("rest", [None, "right"], timeout=9)
+
+        self.assertEqual((held.outcome, held.windows, held.duration_sec), ("correct", 3, 9.0))
+        self.assertEqual((moved.outcome, moved.response), ("false_move", "right"))
+
+    def test_movement_emitted_before_the_cue_is_ignored(self):
+        stale = ["left"]
+        clock = FakeClock()
+
+        def step():
+            clock.tick()
+
+        result = run_cue_trial(
+            1, "rest", step=step, poll_move=lambda: stale.pop() if stale else None, timeout_sec=6, clock=clock
+        )
+
+        self.assertEqual(result.outcome, "correct")
+
+    def test_wolpaw_itr_reference_values(self):
+        self.assertAlmostEqual(wolpaw_itr(2, 1.0, 60.0), 1.0)
+        self.assertEqual(wolpaw_itr(3, 1 / 3, 6.0), 0.0)
+        # 3 classes, 90% accuracy, 6 s per selection
+        bits = 1.58496 + 0.9 * -0.15200 + 0.1 * -4.32193
+        self.assertAlmostEqual(wolpaw_itr(3, 0.9, 6.0), bits * 10, places=3)
+
+    def test_summary_counts_confusion_and_markdown(self):
+        results = [
+            CueTrialResult(1, "left", "correct", "left", 4.0, 4.0, 2),
+            CueTrialResult(2, "left", "wrong", "right", 3.0, 3.0, 1),
+            CueTrialResult(3, "right", "correct", "right", 6.0, 6.0, 2),
+            CueTrialResult(4, "right", "timeout", None, None, 15.0, 5, invalid_windows=1),
+            CueTrialResult(5, "rest", "correct", None, None, 9.0, 3),
+            CueTrialResult(6, "rest", "false_move", "left", 3.0, 3.0, 1),
+        ]
+
+        summary = summarize(results)
+
+        self.assertEqual((summary["n_trials"], summary["correct"]), (6, 3))
+        self.assertAlmostEqual(summary["accuracy"], 0.5)
+        self.assertEqual(summary["per_cue"]["left"]["mean_latency_sec"], 4.0)
+        self.assertEqual(summary["per_cue"]["rest"]["outcomes"], {"correct": 1, "false_move": 1})
+        self.assertEqual(summary["confusion"]["right"], {"left": 0, "right": 1, "none": 1})
+        self.assertEqual(summary["mean_move_latency_sec"], 5.0)
+        self.assertEqual((summary["invalid_windows"], summary["total_windows"]), (1, 14))
+        self.assertFalse(summary["significant"])
+        markdown = format_summary_markdown(summary)
+        self.assertIn("| 左转 | 2 | 1 | 50.0% |", markdown)
+        self.assertIn("误动作 1", markdown)
+
+
 class CarBrainControlTests(unittest.TestCase):
     def test_car_forward_backward_stops_only_when_both_counts_are_low(self):
         sender = FakeSender()
@@ -212,7 +411,7 @@ class CarBrainControlTests(unittest.TestCase):
             WindowResult("前后", attention_count=20, meditation_count=30),
         ]
         controller = car_brain.CarBrainController(
-            car_brain.CarBrainConfig(),
+            car_brain.CarBrainConfig(turning_source="model"),
             FakeReader(results),
             FakePredictor([0]),
             sender,
@@ -236,7 +435,7 @@ class CarBrainControlTests(unittest.TestCase):
             FeatureWindowResult("转向", feature_window=[[1.0] * 14 for _ in range(30)]),
         ]
         controller = car_brain.CarBrainController(
-            car_brain.CarBrainConfig(),
+            car_brain.CarBrainConfig(turning_source="model"),
             FakeReader(results),
             FakePredictor(error=FileNotFoundError("missing model")),
             sender,
@@ -247,6 +446,27 @@ class CarBrainControlTests(unittest.TestCase):
         controller.step()
 
         self.assertEqual(sender.signals, [])
+
+
+    def test_car_focus_turning_blink_selects_and_focus_executes(self):
+        sender = FakeSender()
+        results = [
+            WindowResult("前后", blink_count=2),       # -> 转向
+            focus_window("转向", 70),                  # 左转
+            focus_window("转向", 70, blink_count=1),   # 换方向 -> 右，不动作
+            focus_window("转向", 70),                  # 右转
+            focus_window("转向", 40),                  # 专注不足 -> 停止
+            focus_window("转向", 70, blink_count=2),   # -> 前后
+        ]
+        controller = car_brain.CarBrainController(
+            car_brain.CarBrainConfig(), FakeReader(results), FakePredictor(), sender
+        )
+
+        for _ in results:
+            controller.step()
+
+        self.assertEqual(sender.signals, ["左转", "右转", "停止"])
+        self.assertEqual(controller.mode, car_brain.MODE_FORWARD_BACKWARD)
 
 
 class DroneControlTests(unittest.TestCase):
@@ -260,7 +480,7 @@ class DroneControlTests(unittest.TestCase):
         ]
         drone = drone_hardware.SimulatedDroneController()
         controller = drone_brain.MIDroneController(
-            drone_brain.MIDroneConfig(action_pause_sec=0),
+            drone_brain.MIDroneConfig(action_pause_sec=0, turning_source="model"),
             FakeReader(results),
             drone,
             FakePredictor([1]),
@@ -275,6 +495,27 @@ class DroneControlTests(unittest.TestCase):
         controller.step()
 
         self.assertEqual(drone.actions, ["takeoff", "right", "forward"])
+
+
+    def test_drone_focus_turning_blink_selects_and_focus_executes(self):
+        results = [
+            focus_window("转弯", 70),                  # left
+            focus_window("转弯", 70, blink_count=1),   # flip -> right, no move
+            focus_window("转弯", 70),                  # right
+            focus_window("转弯", 40),                  # hover
+            focus_window("转弯", 40, blink_count=2),   # -> 前后
+        ]
+        drone = drone_hardware.SimulatedDroneController()
+        controller = drone_brain.MIDroneController(
+            drone_brain.MIDroneConfig(action_pause_sec=0), FakeReader(results), drone, FakePredictor()
+        )
+        controller.mode = drone_brain.MODE_TURNING
+
+        for _ in results:
+            controller.step()
+
+        self.assertEqual(drone.actions, ["left", "right"])
+        self.assertEqual(controller.mode, drone_brain.MODE_FORWARD_BACKWARD)
 
 
 class ArmBrainControlTests(unittest.TestCase):
@@ -300,7 +541,9 @@ class ArmBrainControlTests(unittest.TestCase):
             FeatureWindowResult("转弯", blink_count=2),                     # -> 前后
             WindowResult("前后", attention_count=0, meditation_count=30),   # arm_backward
         ]
-        controller = self._controller(results, arm, FakePredictor(probas=[[0.9, 0.05, 0.05]]))
+        controller = self._controller(
+            results, arm, FakePredictor(probas=[[0.9, 0.05, 0.05]]), turning_source="model"
+        )
 
         controller.step()
         controller.step()
@@ -345,7 +588,7 @@ class ArmBrainControlTests(unittest.TestCase):
             FeatureWindowResult("转弯", feature_window=[[1.0] * 14 for _ in range(30)]),
         ]
         controller = self._controller(
-            results, arm, FakePredictor(probas=[[0.8, 0.1, 0.1], [0.4, 0.35, 0.25]])
+            results, arm, FakePredictor(probas=[[0.8, 0.1, 0.1], [0.4, 0.35, 0.25]]), turning_source="model"
         )
         controller.mode = arm_brain.MODE_ROTATION
 
@@ -353,6 +596,25 @@ class ArmBrainControlTests(unittest.TestCase):
         controller.step()
 
         self.assertEqual(arm.actions, ["base_left"])
+
+    def test_rotation_focus_steer_blink_flips_direction_not_gripper(self):
+        arm = arm_hardware.SimulatedArmController()
+        results = [
+            focus_window("转弯", 70),                  # base_left
+            focus_window("转弯", 70, blink_count=1),   # flip -> right (no grip)
+            focus_window("转弯", 70),                  # base_right
+            focus_window("转弯", 40),                  # rest
+            focus_window("转弯", 40, blink_count=2),   # -> 前后
+            WindowResult("前后", blink_count=1),       # outside rotation: gripper
+        ]
+        controller = self._controller(results, arm)
+        controller.mode = arm_brain.MODE_ROTATION
+
+        for _ in results:
+            controller.step()
+
+        self.assertEqual(arm.actions, ["base_left", "base_right", "grip_open"])
+        self.assertEqual(controller.mode, arm_brain.MODE_FORWARD_BACKWARD)
 
     def test_disconnect_homes_and_resets_mode(self):
         arm = arm_hardware.SimulatedArmController()

@@ -16,8 +16,9 @@ if str(ROOT_DIR) not in sys.path:
 if str(DEVICE_DIR) not in sys.path:
     sys.path.insert(0, str(DEVICE_DIR))
 
+from bin.decoding import FocusSteer
 from bin.eeg import BrainSignalReader, FeatureWindowResult, WindowResult
-from bin.models import LABELS, ModelPredictor
+from bin.models import LABELS, ModelPredictor, report_model
 from bci_interface import get_mindwave_interface
 from drone_hardware import DroneController, SimulatedDroneController, TelloDroneController
 
@@ -34,6 +35,7 @@ MODE_NAMES = {
     MODE_TURNING: "转弯",
     MODE_FORWARD_BACKWARD: "前后",
 }
+DIRECTION_NAMES = {"left": "左", "right": "右"}
 
 
 @dataclass
@@ -55,6 +57,9 @@ class MIDroneConfig:
     max_height: int = 150
     height_step: int = 10
     action_pause_sec: float = 1.0
+    # 转弯模式信号来源："rule" = 专注执行、单眨眼换方向；"model" = FinalModel.pth
+    turning_source: str = "rule"
+    focus_threshold: int = 55
 
 
 class MIDroneController:
@@ -72,11 +77,19 @@ class MIDroneController:
         self.mode = MODE_VERTICAL
         self.height = 0
         self.running = False
+        self.steer = FocusSteer(
+            ("left", "right"),
+            focus_threshold=config.focus_threshold,
+            min_focus_count=config.min_decision_count,
+            idle_intent="rest",
+        )
 
     def run(self, max_windows: Optional[int] = None) -> None:
         self.running = True
         windows_seen = 0
         try:
+            if self.config.turning_source == "model":
+                report_model(self.predictor)
             self.drone.connect()
             self.reader.start()
             while self.running:
@@ -92,7 +105,7 @@ class MIDroneController:
     def step(self) -> None:
         mode_name = MODE_NAMES[self.mode]
         print(f"{mode_name}：")
-        if self.mode == MODE_TURNING:
+        if self.mode == MODE_TURNING and self.config.turning_source == "model":
             result = self.reader.collect_feature_window(mode_name)
         else:
             result = self.reader.collect_rule_window(mode_name)
@@ -166,9 +179,16 @@ class MIDroneController:
             self.mode = MODE_FORWARD_BACKWARD
             return
 
+        if self.config.turning_source != "model":
+            self.handle_focus_turning(result)
+            return
+
         predicted = 2
         if isinstance(result, FeatureWindowResult):
-            predicted = self.predictor.predict_window(result.feature_window)
+            try:
+                predicted = self.predictor.predict_window(result.feature_window)
+            except Exception as exc:
+                print(f"模型不可用，保持悬停：{exc}")
         print(f"预测结果：{LABELS[predicted]} | {self.config.window_size}组完成")
 
         if predicted == 2:
@@ -180,6 +200,22 @@ class MIDroneController:
         else:
             print("无人机左转")
             self.drone.left()
+
+    def handle_focus_turning(self, result: WindowResult) -> None:
+        decision = self.steer.decide([s.attention for s in result.samples], result.blink_count)
+        print(f"转弯模式 | 当前方向：{DIRECTION_NAMES[self.steer.direction]} | {decision.reason}")
+        if result.blink_count == 1:
+            print(f"单眨眼：方向切换为{DIRECTION_NAMES[self.steer.direction]}，本窗口不动作")
+            return
+        if decision.intent == "right":
+            print("专注度足够，无人机右转")
+            self.drone.right()
+        elif decision.intent == "left":
+            print("专注度足够，无人机左转")
+            self.drone.left()
+        else:
+            print("专注度不足，保持悬停")
+            time.sleep(self.config.action_pause_sec)
 
     def handle_forward_backward_mode(self, result: WindowResult) -> None:
         if result.blink_count >= self.config.mode_switch_blinks:
@@ -299,6 +335,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--meditation-threshold", type=int, default=50)
     parser.add_argument("--blink-threshold", type=int, default=100)
     parser.add_argument("--poor-signal-threshold", type=int, default=20)
+    parser.add_argument("--turning-source", choices=["rule", "model"], default="rule",
+                        help="转弯模式信号来源：rule=专注执行、单眨眼换方向；model=FinalModel.pth")
+    parser.add_argument("--focus-threshold", type=int, default=55, help="转弯模式中算作专注的 attention 值")
     return parser
 
 
@@ -315,6 +354,8 @@ def config_from_args(args: argparse.Namespace) -> MIDroneConfig:
         meditation_threshold=args.meditation_threshold,
         blink_threshold=args.blink_threshold,
         poor_signal_threshold=args.poor_signal_threshold,
+        turning_source=args.turning_source,
+        focus_threshold=args.focus_threshold,
     )
 
 

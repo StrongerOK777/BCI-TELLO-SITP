@@ -238,14 +238,14 @@ python MI-CarControl/brain_control.py --test-brain
 python MI-CarControl/brain_control.py --dry-run
 ```
 
-小车脑控逻辑：默认进入前后模式；双眨眼切换前后模式和转向模式；前后模式通过注意力/冥想判断前进或后退，转向模式通过模型预测 `left / right / rest` 判断左转、右转或停止。
+小车脑控逻辑：默认进入前后模式；双眨眼切换前后模式和转向模式；前后模式通过注意力/冥想判断前进或后退；转向模式默认“专注执行、单眨眼换方向”（单眨眼切换左/右，专注度足够时向当前方向转，`--focus-threshold` 默认 55），也可用 `--turning-source model` 改为模型预测 `left / right / rest`。
 
 ## 2. TELLO 无人机控制（MI-DroneControl）
 
 ## 文件概况：
 
 - [keyboard_control.py](./MI-DroneControl/keyboard_control.py)：键盘控制 Tello，并显示摄像头画面。
-- [brain_control.py](./MI-DroneControl/brain_control.py)：脑环控制 Tello，无人机动作由规则信号和共享模型共同决定。
+- [brain_control.py](./MI-DroneControl/brain_control.py)：脑环控制 Tello；升降、前后用注意力/冥想规则，转弯默认“专注执行、单眨眼换方向”，可选 `--turning-source model` 使用共享模型。
 - [predict.py](./MI-DroneControl/predict.py)：连续读取脑环窗口，并输出模型预测结果。
 - [diagnose.py](./MI-DroneControl/diagnose.py)：脑环信号诊断程序，用于查看 `attention`、`meditation`、`blinkStrength`、`poorSignal` 等状态。
 - [drone_hardware.py](./MI-DroneControl/drone_hardware.py)：Tello 硬件适配层。
@@ -308,7 +308,7 @@ python MI-DOFBOT/brain_control.py --dry-run
 python MI-DOFBOT/brain_control.py --arm-port COM4
 ```
 
-机械臂脑控逻辑：双眨眼在升降、转弯、前后三个模式间循环，单眨眼开合夹爪；升降/前后模式用注意力/冥想计数（带死区）判断方向，转弯模式用共享模型并做置信度门控；所有方向决策都经过多窗投票平滑，单个噪声窗口不会误动作。首次务必先 `--dry-run` 或 `--simulated`。
+机械臂脑控逻辑：双眨眼在升降、转弯、前后三个模式间循环，单眨眼开合夹爪（转弯模式下改为切换旋转方向）；升降/前后模式用注意力/冥想计数（带死区）判断方向，转弯模式默认“专注执行、单眨眼换方向”，`--turning-source model` 时用共享模型并做置信度门控；所有方向决策都经过多窗投票平滑，单个噪声窗口不会误动作。首次务必先 `--dry-run` 或 `--simulated`。
 
 <a name="future"></a>
 
@@ -317,6 +317,7 @@ python MI-DOFBOT/brain_control.py --arm-port COM4
 - 保持 `bci_interface.py` 作为统一脑环接口，避免串口配置散落在各个程序中。
 - 继续优化 `TrainUser/` 的训练流程，让一次训练得到的模型可以更稳定地服务三类硬件。
 - 公开数据集测试结论见 [experiments/public_datasets/README.md](./experiments/public_datasets/README.md)：单通道前额脑环难以区分左 / 右手运动想象，适合专注度、任务 / 静息开关与眨眼指令。
+- 实机在线性能用 [口令测试](./experiments/online_cue_test/README.md) 记录：`python experiments/online_cue_test/cue_test.py --device drone --subject S01`。
 - 后续可以在现有架构上继续开发 SSVEP 控制方式。
 
 <a name="repo-structure"></a>
@@ -332,7 +333,8 @@ BCI-TELLO/
 │   ├── neuropy.py                    # NeuroSky / MindWave 驱动
 │   └── README.md
 ├── experiments/
-│   └── public_datasets/              # 公开数据集基准测试（Mendeley NeuroSky、PhysioNet 运动想象）
+│   ├── public_datasets/              # 公开数据集基准测试（Mendeley NeuroSky、PhysioNet 运动想象）
+│   └── online_cue_test/              # 口令测试：提示左转/右转/静止，统计命中率、耗时、ITR
 ├── src/                              # 公共训练产物
 │   ├── data/                         # 训练数据
 │   ├── models/                       # 共享模型，默认 FinalModel.pth

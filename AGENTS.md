@@ -32,12 +32,13 @@ BCI-TELLO is a Tongji University undergraduate innovation (SITP) project. A Neur
 - **`bin/`** is the reusable core imported by every device app — do not fork logic into device folders:
   - `eeg.py` — `BrainSignalReader`, `EEGSnapshot`, feature/window builders, blink debounce.
   - `models.py` — `FinalUnifiedModel`, `ModelPredictor` (`predict_window` argmax / `predict_proba` softmax), feature-window combining, model loading.
-  - `decoding.py` — signal→intent layer: `Decision`, `gate_by_confidence` (softmax rest-band), `VoteWindow` (majority-vote hysteresis). Stdlib-only, device-agnostic.
-  - `training.py` — dataset + model variants and the training entrypoint.
+  - `decoding.py` — signal→intent layer: `Decision`, `gate_by_confidence` (softmax rest-band), `VoteWindow` (majority-vote hysteresis), `FocusSteer` (single blink flips direction, sustained attention executes it). Stdlib-only, device-agnostic.
+  - `training.py` — dataset + model variants; trial-grouped evaluation (`load_trials`, `trial_grouped_split`, `trial_windows`, `significance_threshold`, `feature_stats`).
+  - `evaluation.py` — cued online test: `build_cue_schedule`, `run_cue_trial` (injected step/poll/clock), `summarize` (accuracy, latency, confusion, significance, Wolpaw ITR), `format_summary_markdown`.
   - `keyboard.py` — `KeyboardReader` (swappable backend). `transport.py` — `JsonHttpClient`.
 - **One shared model**: `TrainUser/train_user.py` trains once and writes `src/models/FinalModel.pth`; all three `brain_control.py` scripts default to that path (override with `--model-path`).
 - **Device apps** (`MI-CarControl/`, `MI-DroneControl/`, `MI-DOFBOT/`) each pair a `keyboard_control.py` with a `brain_control.py`. Each `brain_control.py` inserts `ROOT_DIR` into `sys.path` so it can `from bin.eeg import …`. Hardware is isolated behind an adapter (`drone_hardware.py`, `arm_hardware.py`) with a simulated variant (`SimulatedDroneController`, `SimulatedArmController`) that the tests exercise. All three follow one shape: a `@dataclass *Config`, a controller that takes `reader` / hardware / `predictor` **by constructor**, a `build_controller(...)` factory, and `build_arg_parser` / `config_from_args` / `main`. The arm additionally routes every decision through `bin.decoding` (confidence gate + vote hysteresis) before it moves a servo.
-- **Control logic is a mode state machine**: a double blink toggles modes (e.g. 前后 forward/backward ↔ 转向/转弯 turning ↔ 升降 up/down); attention/meditation drive rule modes, the model drives turning. See `tests/test_modular_bin.py` for the authoritative expected signal sequences.
+- **Control logic is a mode state machine**: a double blink toggles modes (e.g. 前后 forward/backward ↔ 转向/转弯 turning ↔ 升降 up/down); attention/meditation drive rule modes; turning defaults to `turning_source="rule"` (`FocusSteer`: single blink flips left/right, focus executes) and the shared model is opt-in via `--turning-source model` (single-channel MI left/right is near chance — see `experiments/public_datasets/README.md`). See `tests/test_modular_bin.py` for the authoritative expected signal sequences.
 
 ## File Map
 <!-- AGENTS-GENERATED:START filemap -->
@@ -51,7 +52,7 @@ MI-DroneControl/       Tello: keyboard/brain control, predict.py, diagnose.py, d
 MI-DOFBOT/             DOFBOT arm: keyboard/brain control, arm_hardware.py, Arm_Lib
 Spaceinvaders/         Legacy EEG test game (Python 2.7 + 3.11)
 tests/                 unittest suite for bin/ core + controllers
-experiments/           Offline benchmarks on public EEG datasets (public_datasets/, data not committed)
+experiments/           public_datasets/ offline benchmarks (data not committed); online_cue_test/ cued 左转/右转/静止 test
 ```
 <!-- AGENTS-GENERATED:END filemap -->
 
