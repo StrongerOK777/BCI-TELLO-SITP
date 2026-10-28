@@ -17,7 +17,16 @@ from bin.evaluation import (
     summarize,
     wolpaw_itr,
 )
-from bin.eeg import BrainSignalReader, EEGSnapshot, FeatureWindowResult, WindowResult, build_feature_vector
+from bin import control
+from bin.eeg import (
+    BrainSignalReader,
+    EEGSnapshot,
+    FeatureWindowResult,
+    SimulatedBrainSignalReader,
+    WindowResult,
+    build_feature_vector,
+)
+from bin.hub import ControlHub, DeviceOption
 from bin.keyboard import KeyboardReader
 from bin.models import FinalUnifiedModel, ModelPredictor, combine_feature_window
 from bin.training import (
@@ -382,274 +391,392 @@ class CueEvaluationTests(unittest.TestCase):
         self.assertIn("误动作 1", markdown)
 
 
+FEATURES = [[1.0] * 14 for _ in range(30)]
+
+
+def rule(mode_name, attention=0, meditation=0, blinks=0):
+    return WindowResult(mode_name, attention_count=attention, meditation_count=meditation, blink_count=blinks)
+
+
+def car_session(results, *, sender=None, predictor=None, **config):
+    sender = sender or FakeSender()
+    session = car_brain.build_controller(
+        car_brain.CarBrainConfig(**config), reader=FakeReader(results), sender=sender, predictor=predictor
+    )
+    return session, sender
+
+
+def drone_session(results, *, predictor=None, **config):
+    drone = drone_hardware.SimulatedDroneController()
+    session = drone_brain.build_controller(
+        drone_brain.MIDroneConfig(**config), reader=FakeReader(results), drone=drone, predictor=predictor
+    )
+    return session, drone
+
+
+def arm_session(results, *, predictor=None, **config):
+    config.setdefault("vote_window", 1)
+    config.setdefault("vote_min", 1)
+    arm = arm_hardware.SimulatedArmController()
+    session = arm_brain.build_controller(
+        arm_brain.ArmBrainConfig(**config), reader=FakeReader(results), arm=arm, predictor=predictor
+    )
+    return session, arm
+
+
+def run_steps(session, count):
+    return [session.step() for _ in range(count)]
+
+
+class UnifiedSessionTests(unittest.TestCase):
+    def test_modes_follow_device_capabilities_in_fixed_order(self):
+        car, _ = car_session([])
+        drone, _ = drone_session([])
+        arm, _ = arm_session([])
+
+        self.assertEqual(car.modes, (control.MODE_FORWARD_BACKWARD, control.MODE_TURNING))
+        self.assertEqual(drone.modes, control.MODE_ORDER)
+        self.assertEqual(arm.modes, control.MODE_ORDER)
+        self.assertEqual((car.mode, drone.mode, arm.mode), ("forward_backward", "vertical", "vertical"))
+
+    def test_emergency_halts_until_resume_and_resets_mode(self):
+        session, sender = car_session([rule("前后", 30, 0), rule("前后", 30, 0)])
+        session.mode = control.MODE_TURNING
+
+        result = session.emergency_stop()
+        halted = session.step()
+        session.resume()
+        resumed = session.step()
+
+        self.assertTrue(result.executed)
+        self.assertEqual(halted.event, "halted")
+        self.assertEqual(sender.signals, ["停止", "前进"])  # emergency stop, then the resumed window
+        self.assertEqual(resumed.mode, control.MODE_FORWARD_BACKWARD)
+
+    def test_manual_commands_respect_capabilities(self):
+        session, sender = car_session([])
+
+        refused = session.execute_manual("up")
+        moved = session.execute_manual("left")
+        no_aux = session.execute_manual("aux")
+
+        self.assertFalse(refused.executed)
+        self.assertTrue(moved.executed)
+        self.assertFalse(no_aux.executed)
+        self.assertEqual(sender.signals, ["左转"])
+
+    def test_apply_config_changes_focus_threshold_live(self):
+        session, sender = car_session([focus_window("转弯", 60), focus_window("转弯", 60)])
+        session.mode = control.MODE_TURNING
+
+        session.step()                      # 60 >= 55 -> 左转
+        session.apply_config(focus_threshold=65)
+        session.step()                      # 60 < 65 -> 停止
+
+        self.assertEqual(sender.signals, ["左转", "停止"])
+
+    def test_listeners_receive_every_report(self):
+        reports = []
+        session, _ = car_session([rule("前后", 30, 0), rule("前后", blinks=2)])
+        session.listeners.append(reports.append)
+
+        run_steps(session, 2)
+
+        self.assertEqual([r.event for r in reports], ["decision", "mode_switch"])
+        self.assertEqual(reports[0].intent, "forward")
+        self.assertIn("前后 → 转弯", reports[1].message)
+
+    def test_simulated_reader_feeds_sample_listener(self):
+        samples = []
+        reader = SimulatedBrainSignalReader(window_size=5, sample_interval=0.001, sample_listener=samples.append)
+        reader.headset.set(attention=90, meditation=10)
+        reader.start()
+
+        window = reader.collect_rule_window("测试")
+
+        self.assertTrue(window.valid)
+        self.assertEqual(window.attention_count, 5)
+        self.assertEqual(len(samples), 5)
+        reader.headset.set(poor_signal=200)
+        self.assertTrue(reader.collect_rule_window("测试").disconnected)
+
+    def test_simulated_queued_double_blink_lands_in_one_window(self):
+        reader = SimulatedBrainSignalReader(window_size=40, sample_interval=0.05)  # 2 s window
+        reader.headset.set(attention=60, meditation=60)
+        reader.start()
+        reader.headset.queue_blinks(2)
+
+        self.assertEqual(reader.collect_rule_window("测试").blink_count, 2)
+        self.assertEqual(reader.collect_rule_window("测试").blink_count, 0)
+
+
 class CarBrainControlTests(unittest.TestCase):
-    def test_car_forward_backward_stops_only_when_both_counts_are_low(self):
-        sender = FakeSender()
-        results = [
-            WindowResult("前后", attention_count=25, meditation_count=10),
-            WindowResult("前后", attention_count=10, meditation_count=10),
-        ]
-        controller = car_brain.CarBrainController(
-            car_brain.CarBrainConfig(min_decision_count=20),
-            FakeReader(results),
-            FakePredictor(),
-            sender,
+    def test_car_rule_mode_uses_dead_band_and_margin(self):
+        session, sender = car_session([
+            rule("前后", 25, 10),   # attention wins -> 前进
+            rule("前后", 10, 10),   # both below 20 -> 停止
+            rule("前后", 22, 21),   # difference < margin 3 -> 停止
+            rule("前后", 10, 25),   # meditation wins -> 后退
+        ])
+
+        run_steps(session, 4)
+
+        self.assertEqual(sender.signals, ["前进", "停止", "停止", "后退"])
+
+    def test_car_cycles_modes_and_steers_with_focus(self):
+        session, sender = car_session([
+            rule("前后", 30, 20),                     # 前进
+            rule("前后", blinks=2),                   # -> 转弯 (停止 on switch)
+            focus_window("转弯", 70),                 # 左转
+            focus_window("转弯", 70, blink_count=1),  # flip -> right, no command
+            focus_window("转弯", 70),                 # 右转
+            focus_window("转弯", 40),                 # not focused -> 停止
+            focus_window("转弯", 40, blink_count=2),  # -> 前后 (停止 on switch)
+        ])
+
+        run_steps(session, 7)
+
+        self.assertEqual(sender.signals, ["前进", "停止", "左转", "右转", "停止", "停止"])
+        self.assertEqual(session.mode, control.MODE_FORWARD_BACKWARD)
+
+    def test_car_invalid_window_warns_and_disconnect_stops(self):
+        session, sender = car_session([
+            WindowResult("转弯", valid=False, poor_signal=50, reason="poorSignal=50"),
+            WindowResult("转弯", valid=False, disconnected=True, poor_signal=200, reason="poorSignal=200"),
+        ])
+        session.mode = control.MODE_TURNING
+
+        invalid, disconnected = run_steps(session, 2)
+
+        self.assertEqual((invalid.event, disconnected.event), ("invalid", "disconnect"))
+        self.assertEqual(sender.signals, ["停止"])
+        self.assertEqual(session.mode, control.MODE_FORWARD_BACKWARD)
+
+    def test_car_model_turning_is_confidence_gated_and_errors_rest(self):
+        gated, gated_sender = car_session(
+            [FeatureWindowResult("转弯", feature_window=FEATURES)] * 2,
+            predictor=FakePredictor(probas=[[0.8, 0.1, 0.1], [0.4, 0.35, 0.25]]),
+            turning_source="model",
         )
-
-        controller.step()
-        controller.step()
-
-        self.assertEqual(sender.signals, ["前进", "停止"])
-
-    def test_car_state_machine_switches_modes_and_sends_expected_signals(self):
-        sender = FakeSender()
-        results = [
-            WindowResult("前后", attention_count=30, meditation_count=20),
-            WindowResult("前后", blink_count=2),
-            FeatureWindowResult("转向", feature_window=[[1.0] * 14 for _ in range(30)]),
-            FeatureWindowResult("转向", blink_count=2),
-            WindowResult("前后", attention_count=20, meditation_count=30),
-        ]
-        controller = car_brain.CarBrainController(
-            car_brain.CarBrainConfig(turning_source="model"),
-            FakeReader(results),
-            FakePredictor([0]),
-            sender,
+        broken, broken_sender = car_session(
+            [FeatureWindowResult("转弯", feature_window=FEATURES)],
+            predictor=FakePredictor(error=FileNotFoundError("missing model")),
+            turning_source="model",
         )
+        gated.mode = broken.mode = control.MODE_TURNING
 
-        controller.step()
-        controller.step()
-        self.assertEqual(controller.mode, car_brain.MODE_TURNING)
-        controller.step()
-        controller.step()
-        self.assertEqual(controller.mode, car_brain.MODE_FORWARD_BACKWARD)
-        controller.step()
+        run_steps(gated, 2)
+        report = broken.step()
 
-        self.assertEqual(sender.signals, ["前进", "左转", "后退"])
-
-    def test_car_invalid_window_and_model_error_do_not_send_new_actions(self):
-        sender = FakeSender()
-        results = [
-            WindowResult("前后", valid=False, poor_signal=200, reason="poorSignal=200"),
-            WindowResult("前后", blink_count=2),
-            FeatureWindowResult("转向", feature_window=[[1.0] * 14 for _ in range(30)]),
-        ]
-        controller = car_brain.CarBrainController(
-            car_brain.CarBrainConfig(turning_source="model"),
-            FakeReader(results),
-            FakePredictor(error=FileNotFoundError("missing model")),
-            sender,
-        )
-
-        controller.step()
-        controller.step()
-        controller.step()
-
-        self.assertEqual(sender.signals, [])
-
-
-    def test_car_focus_turning_blink_selects_and_focus_executes(self):
-        sender = FakeSender()
-        results = [
-            WindowResult("前后", blink_count=2),       # -> 转向
-            focus_window("转向", 70),                  # 左转
-            focus_window("转向", 70, blink_count=1),   # 换方向 -> 右，不动作
-            focus_window("转向", 70),                  # 右转
-            focus_window("转向", 40),                  # 专注不足 -> 停止
-            focus_window("转向", 70, blink_count=2),   # -> 前后
-        ]
-        controller = car_brain.CarBrainController(
-            car_brain.CarBrainConfig(), FakeReader(results), FakePredictor(), sender
-        )
-
-        for _ in results:
-            controller.step()
-
-        self.assertEqual(sender.signals, ["左转", "右转", "停止"])
-        self.assertEqual(controller.mode, car_brain.MODE_FORWARD_BACKWARD)
+        self.assertEqual(gated_sender.signals, ["左转", "停止"])
+        self.assertEqual(broken_sender.signals, ["停止"])
+        self.assertIn("模型不可用", report.message)
 
 
 class DroneControlTests(unittest.TestCase):
-    def test_simulated_drone_state_machine(self):
-        results = [
-            WindowResult("升降", attention_count=30, meditation_count=0, blink_count=0),
-            WindowResult("升降", attention_count=0, meditation_count=0, blink_count=2),
-            FeatureWindowResult("转弯", blink_count=0, feature_window=[[1.0] * 14 for _ in range(30)]),
-            FeatureWindowResult("转弯", blink_count=2, feature_window=[[1.0] * 14 for _ in range(30)]),
-            WindowResult("前后", attention_count=30, meditation_count=30, blink_count=0),
-        ]
-        drone = drone_hardware.SimulatedDroneController()
-        controller = drone_brain.MIDroneController(
-            drone_brain.MIDroneConfig(action_pause_sec=0, turning_source="model"),
-            FakeReader(results),
-            drone,
-            FakePredictor([1]),
-        )
+    def test_drone_full_cycle_takeoff_moves_and_landing(self):
+        session, drone = drone_session([
+            rule("升降", 30, 0),                      # takeoff
+            rule("升降", 30, 0),                      # up
+            rule("升降", 0, 30),                      # down (back to take-off height)
+            rule("升降", blinks=2),                   # -> 前后
+            rule("前后", 30, 0),                      # forward
+            rule("前后", blinks=2),                   # -> 转弯
+            focus_window("转弯", 70),                 # left
+            focus_window("转弯", 70, blink_count=1),  # flip -> right
+            focus_window("转弯", 70),                 # right
+            focus_window("转弯", 40, blink_count=2),  # -> 升降 (order is 升降 -> 前后 -> 转弯)
+            rule("升降", 0, 30),                      # land
+        ])
 
-        controller.step()
-        controller.step()
-        self.assertEqual(controller.mode, drone_brain.MODE_TURNING)
-        controller.step()
-        controller.step()
-        self.assertEqual(controller.mode, drone_brain.MODE_FORWARD_BACKWARD)
-        controller.step()
+        run_steps(session, 11)
 
-        self.assertEqual(drone.actions, ["takeoff", "right", "forward"])
+        self.assertEqual(drone.actions, ["takeoff", "up", "down", "forward", "left", "right", "land"])
+        self.assertEqual(session.device.height, 0)
 
+    def test_drone_refuses_moves_until_airborne(self):
+        session, drone = drone_session([rule("前后", 30, 0), focus_window("转弯", 70)])
+        session.mode = control.MODE_FORWARD_BACKWARD
 
-    def test_drone_focus_turning_blink_selects_and_focus_executes(self):
-        results = [
-            focus_window("转弯", 70),                  # left
-            focus_window("转弯", 70, blink_count=1),   # flip -> right, no move
-            focus_window("转弯", 70),                  # right
-            focus_window("转弯", 40),                  # hover
-            focus_window("转弯", 40, blink_count=2),   # -> 前后
-        ]
-        drone = drone_hardware.SimulatedDroneController()
-        controller = drone_brain.MIDroneController(
-            drone_brain.MIDroneConfig(action_pause_sec=0), FakeReader(results), drone, FakePredictor()
-        )
-        controller.mode = drone_brain.MODE_TURNING
+        forward = session.step()
+        session.mode = control.MODE_TURNING
+        turn = session.step()
 
-        for _ in results:
-            controller.step()
+        self.assertEqual(drone.actions, [])
+        self.assertFalse(forward.executed or turn.executed)
+        self.assertIn("未起飞", forward.message)
 
-        self.assertEqual(drone.actions, ["left", "right"])
-        self.assertEqual(controller.mode, drone_brain.MODE_FORWARD_BACKWARD)
+    def test_drone_disconnect_lands_and_resets_mode(self):
+        session, drone = drone_session([
+            rule("升降", 30, 0),
+            rule("升降", blinks=2),
+            WindowResult("前后", valid=False, disconnected=True, poor_signal=200, reason="poorSignal=200"),
+        ])
+
+        run_steps(session, 3)
+
+        self.assertEqual(drone.actions, ["takeoff", "land"])
+        self.assertEqual(session.mode, control.MODE_VERTICAL)
+
+    def test_drone_run_lands_on_exit(self):
+        session, drone = drone_session([rule("升降", 30, 0)])
+
+        session.run(max_windows=1)
+
+        self.assertEqual(drone.actions, ["connect", "takeoff", "land", "close"])
 
 
 class ArmBrainControlTests(unittest.TestCase):
-    def _config(self, **overrides):
-        params = dict(action_pause_sec=0, vote_window=1, vote_min=1)
-        params.update(overrides)
-        return arm_brain.ArmBrainConfig(**params)
+    def test_arm_cycles_modes_gripper_and_steering(self):
+        session, arm = arm_session([
+            rule("升降", 30, 0),                      # arm_up
+            rule("升降", blinks=2),                   # -> 前后
+            rule("前后", 0, 30),                      # arm_backward
+            rule("前后", blinks=2),                   # -> 转弯
+            focus_window("转弯", 70),                 # base_left
+            focus_window("转弯", 70, blink_count=1),  # flip direction (gripper untouched)
+            focus_window("转弯", 70),                 # base_right
+            focus_window("转弯", 40, blink_count=2),  # -> 升降
+            rule("升降", blinks=1),                   # aux: gripper opens
+            rule("升降", blinks=1),                   # aux: gripper closes
+        ])
 
-    def _controller(self, results, arm, predictor=None, **config_overrides):
-        return arm_brain.ArmBrainController(
-            self._config(**config_overrides),
-            FakeReader(results),
-            arm,
-            predictor or FakePredictor(),
+        run_steps(session, 10)
+
+        self.assertEqual(
+            arm.actions, ["arm_up", "arm_backward", "base_left", "base_right", "grip_open", "grip_close"]
         )
 
-    def test_state_machine_cycles_modes_and_executes_actions(self):
-        arm = arm_hardware.SimulatedArmController()
-        results = [
-            WindowResult("升降", attention_count=30, meditation_count=0),  # arm_up
-            WindowResult("升降", blink_count=2),                            # -> 转弯
-            FeatureWindowResult("转弯", feature_window=[[1.0] * 14 for _ in range(30)]),  # left
-            FeatureWindowResult("转弯", blink_count=2),                     # -> 前后
-            WindowResult("前后", attention_count=0, meditation_count=30),   # arm_backward
-        ]
-        controller = self._controller(
-            results, arm, FakePredictor(probas=[[0.9, 0.05, 0.05]]), turning_source="model"
+    def test_arm_default_vote_window_suppresses_single_noisy_window(self):
+        session, arm = arm_session(
+            [rule("升降", 30, 0), rule("升降", 30, 0), rule("升降", 0, 30)], vote_window=3, vote_min=2
         )
 
-        controller.step()
-        controller.step()
-        self.assertEqual(controller.mode, arm_brain.MODE_ROTATION)
-        controller.step()
-        controller.step()
-        self.assertEqual(controller.mode, arm_brain.MODE_FORWARD_BACKWARD)
-        controller.step()
-
-        self.assertEqual(arm.actions, ["arm_up", "base_left", "arm_backward"])
-
-    def test_single_blink_toggles_gripper(self):
-        arm = arm_hardware.SimulatedArmController()
-        results = [WindowResult("升降", blink_count=1), WindowResult("升降", blink_count=1)]
-        controller = self._controller(results, arm)
-
-        controller.step()
-        controller.step()
-
-        self.assertEqual(arm.actions, ["grip_open", "grip_close"])
-
-    def test_vote_window_suppresses_single_noisy_window(self):
-        arm = arm_hardware.SimulatedArmController()
-        results = [
-            WindowResult("升降", attention_count=30, meditation_count=0),  # up
-            WindowResult("升降", attention_count=30, meditation_count=0),  # up
-            WindowResult("升降", attention_count=0, meditation_count=30),  # lone down
-        ]
-        controller = self._controller(results, arm, vote_window=3, vote_min=2)
-
-        controller.step()
-        controller.step()
-        controller.step()
+        run_steps(session, 3)
 
         # first window is below the vote threshold, the lone "down" never wins.
         self.assertEqual(arm.actions, ["arm_up", "arm_up"])
+        self.assertEqual((arm_brain.ArmBrainConfig().vote_window, arm_brain.ArmBrainConfig().vote_min), (3, 2))
 
-    def test_rotation_confidence_gate_blocks_low_confidence(self):
-        arm = arm_hardware.SimulatedArmController()
-        results = [
-            FeatureWindowResult("转弯", feature_window=[[1.0] * 14 for _ in range(30)]),
-            FeatureWindowResult("转弯", feature_window=[[1.0] * 14 for _ in range(30)]),
-        ]
-        controller = self._controller(
-            results, arm, FakePredictor(probas=[[0.8, 0.1, 0.1], [0.4, 0.35, 0.25]]), turning_source="model"
+    def test_arm_model_rotation_confidence_gate(self):
+        session, arm = arm_session(
+            [FeatureWindowResult("转弯", feature_window=FEATURES)] * 2,
+            predictor=FakePredictor(probas=[[0.8, 0.1, 0.1], [0.4, 0.35, 0.25]]),
+            turning_source="model",
         )
-        controller.mode = arm_brain.MODE_ROTATION
+        session.mode = control.MODE_TURNING
 
-        controller.step()
-        controller.step()
+        run_steps(session, 2)
 
         self.assertEqual(arm.actions, ["base_left"])
 
-    def test_rotation_focus_steer_blink_flips_direction_not_gripper(self):
-        arm = arm_hardware.SimulatedArmController()
-        results = [
-            focus_window("转弯", 70),                  # base_left
-            focus_window("转弯", 70, blink_count=1),   # flip -> right (no grip)
-            focus_window("转弯", 70),                  # base_right
-            focus_window("转弯", 40),                  # rest
-            focus_window("转弯", 40, blink_count=2),   # -> 前后
-            WindowResult("前后", blink_count=1),       # outside rotation: gripper
-        ]
-        controller = self._controller(results, arm)
-        controller.mode = arm_brain.MODE_ROTATION
+    def test_arm_disconnect_homes_and_resets_mode(self):
+        session, arm = arm_session(
+            [WindowResult("转弯", valid=False, disconnected=True, poor_signal=200, reason="poorSignal=200")]
+        )
+        session.mode = control.MODE_TURNING
 
-        for _ in results:
-            controller.step()
+        session.step()
 
-        self.assertEqual(arm.actions, ["base_left", "base_right", "grip_open"])
-        self.assertEqual(controller.mode, arm_brain.MODE_FORWARD_BACKWARD)
+        self.assertEqual(session.mode, control.MODE_VERTICAL)
+        self.assertEqual(arm.actions, ["home"])
 
-    def test_disconnect_homes_and_resets_mode(self):
-        arm = arm_hardware.SimulatedArmController()
-        results = [
-            FeatureWindowResult(
-                "转弯", valid=False, disconnected=True, poor_signal=200, reason="poorSignal=200"
-            )
-        ]
-        controller = self._controller(results, arm)
-        controller.mode = arm_brain.MODE_ROTATION
+    def test_arm_invalid_window_without_disconnect_does_nothing(self):
+        session, arm = arm_session([WindowResult("升降", valid=False, poor_signal=50, reason="poorSignal=50")])
 
-        controller.step()
-
-        self.assertEqual(controller.mode, arm_brain.MODE_VERTICAL)
-        self.assertIn("home", arm.actions)
-
-    def test_invalid_window_without_disconnect_does_nothing(self):
-        arm = arm_hardware.SimulatedArmController()
-        results = [WindowResult("升降", valid=False, poor_signal=50, reason="poorSignal=50")]
-        controller = self._controller(results, arm)
-
-        controller.step()
+        session.step()
 
         self.assertEqual(arm.actions, [])
 
-    def test_run_connects_homes_and_closes(self):
-        arm = arm_hardware.SimulatedArmController()
-        results = [WindowResult("升降", attention_count=0, meditation_count=0)]
-        controller = self._controller(results, arm)
+    def test_arm_run_connects_homes_and_closes(self):
+        session, arm = arm_session([rule("升降")])
 
-        controller.run(max_windows=1)
+        session.run(max_windows=1)
 
-        self.assertEqual(arm.actions[0], "connect")
-        self.assertIn("home", arm.actions)
-        self.assertEqual(arm.actions[-1], "close")
+        self.assertEqual(arm.actions[:2], ["connect", "home"])
+        self.assertEqual(arm.actions[-2:], ["home", "close"])
+
+
+def hub_with_devices(**kwargs):
+    def car_factory(real):
+        settings = car_brain.CarBrainConfig(dry_run=not real, window_size=3)
+        return settings, car_brain.build_device(settings)
+
+    def arm_factory(real):
+        settings = arm_brain.ArmBrainConfig(simulated=not real, window_size=3, vote_window=1, vote_min=1,
+                                            min_decision_count=2)
+        return settings, arm_brain.build_device(settings)
+
+    options = [DeviceOption("car", "小车", car_factory), DeviceOption("arm", "机械臂", arm_factory)]
+    return ControlHub(options, sim_sample_interval=0.002, **kwargs)
+
+
+def wait_for(predicate, timeout=3.0):
+    import time
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+class ControlHubTests(unittest.TestCase):
+    def test_real_hardware_requires_allow_real(self):
+        hub = hub_with_devices()
+        with self.assertRaises(PermissionError):
+            hub.connect("car", real_hardware=True)
+        self.assertFalse(hub.state()["connected"])
+
+    def test_manual_commands_only_while_brain_paused(self):
+        hub = hub_with_devices()
+        hub.connect("arm")
+        try:
+            self.assertTrue(hub.command("aux")["executed"])
+            hub.set_sim_headset(attention=90, meditation=10)
+            hub.start_brain()
+            self.assertTrue(wait_for(lambda: hub.last_report and hub.last_report["executed"]))
+            with self.assertRaises(RuntimeError):
+                hub.command("up")
+            hub.stop_brain()
+            self.assertFalse(hub.running)
+            self.assertIn("arm_up", hub.session.device.arm.actions)
+        finally:
+            hub.shutdown()
+
+    def test_emergency_works_while_running_and_events_are_published(self):
+        hub = hub_with_devices()
+        events = hub.subscribe()
+        hub.connect("arm")
+        try:
+            hub.set_sim_headset(attention=90, meditation=10)
+            hub.start_brain()
+            self.assertTrue(wait_for(lambda: hub.last_report is not None))
+            result = hub.emergency()
+            self.assertTrue(wait_for(lambda: not hub.running))
+            self.assertTrue(result["executed"])
+            self.assertTrue(hub.state()["halted"])
+            self.assertIn("home", hub.session.device.arm.actions)
+            seen = set()
+            while not events.empty():
+                seen.add(events.get_nowait()[0])
+            self.assertTrue({"state", "sample", "report", "action", "log"} <= seen)
+        finally:
+            hub.shutdown()
+
+    def test_config_updates_apply_to_session_and_reconnect(self):
+        hub = hub_with_devices()
+        hub.connect("car")
+        try:
+            hub.update_config(focus_threshold=70)
+            self.assertEqual(hub.session.config.focus_threshold, 70)
+            hub.connect("arm")
+            self.assertEqual(hub.session.config.focus_threshold, 70)
+            with self.assertRaises(KeyError):
+                hub.update_config(window_size=5)
+        finally:
+            hub.shutdown()
 
 
 if __name__ == "__main__":

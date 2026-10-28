@@ -178,6 +178,7 @@ class BrainSignalReader:
         poor_signal_threshold: int = 20,
         blink_debounce_sec: float = 0.5,
         device_factory: Optional[Callable[[str, int], Any]] = None,
+        sample_listener: Optional[Callable[[EEGSnapshot], None]] = None,
     ) -> None:
         self.port = port or os.getenv("MINDWAVE_PORT")
         self.baud = int(baud or os.getenv("MINDWAVE_BAUD", str(DEFAULT_MINDWAVE_BAUD)))
@@ -190,6 +191,8 @@ class BrainSignalReader:
         self.poor_signal_threshold = poor_signal_threshold
         self.blink_debounce_sec = max(0.0, blink_debounce_sec)
         self.device_factory = device_factory
+        # called with every snapshot read inside a window (live plots); optional
+        self.sample_listener = sample_listener
         self.device: Any = None
         self.running = False
         self.last_blink_time = 0.0
@@ -256,6 +259,11 @@ class BrainSignalReader:
         index = 0
         while index < self.window_size:
             snapshot = self.read_snapshot()
+            if self.sample_listener is not None:
+                try:
+                    self.sample_listener(snapshot)
+                except Exception as exc:
+                    print(f"[BrainSignalReader] 采样回调失败：{exc}")
             result.samples.append(snapshot)
             result.poor_signal = snapshot.poorSignal
 
@@ -306,6 +314,100 @@ class BrainSignalReader:
             return False
         self.last_blink_time = now
         return True
+
+
+class SimulatedHeadset:
+    """In-memory stand-in for ``NeuroSkyPy`` whose readings are set by hand.
+
+    ``attention`` / ``meditation`` / ``poorSignal`` can be changed at any time
+    (e.g. from UI sliders); :meth:`blink` schedules blink pulses that the
+    reader's debounce counts once each. Readings get a little jitter so live
+    plots look like a real headset. Band powers are plausible constants so the
+    model path also receives a feature window.
+    """
+
+    BLINK_PULSE_SEC = 0.25
+
+    def __init__(self, attention: int = 40, meditation: int = 50, *, jitter: int = 4,
+                 clock: Callable[[], float] = time.monotonic, seed: Optional[int] = None) -> None:
+        import random
+
+        self.target_attention = attention
+        self.target_meditation = meditation
+        self.poorSignal = 0
+        self.jitter = jitter
+        self.clock = clock
+        self._rng = random.Random(seed)
+        self._blinks: List[float] = []
+        self.queued_blinks = 0
+        self.rawValue = 0
+        self.delta, self.theta = 120000, 60000
+        self.lowAlpha, self.highAlpha = 20000, 15000
+        self.lowBeta, self.highBeta = 12000, 10000
+        self.lowGamma, self.midGamma = 4000, 2000
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def set(self, *, attention: Optional[int] = None, meditation: Optional[int] = None,
+            poor_signal: Optional[int] = None) -> None:
+        if attention is not None:
+            self.target_attention = max(0, min(100, int(attention)))
+        if meditation is not None:
+            self.target_meditation = max(0, min(100, int(meditation)))
+        if poor_signal is not None:
+            self.poorSignal = max(0, min(200, int(poor_signal)))
+
+    def blink(self, times: int = 1, gap_sec: float = 0.7) -> None:
+        now = self.clock()
+        self._blinks.extend(now + i * gap_sec for i in range(max(1, int(times))))
+
+    def queue_blinks(self, times: int = 1) -> None:
+        """Blink at the start of the next window, so a double blink is never split
+        across two windows (what a UI button wants)."""
+
+        self.queued_blinks += max(1, int(times))
+
+    def _noisy(self, value: int) -> int:
+        if value <= 0:
+            return 0
+        return max(1, min(100, value + self._rng.randint(-self.jitter, self.jitter)))
+
+    @property
+    def attention(self) -> int:
+        return self._noisy(self.target_attention)
+
+    @property
+    def meditation(self) -> int:
+        return self._noisy(self.target_meditation)
+
+    @property
+    def blinkStrength(self) -> int:
+        now = self.clock()
+        self._blinks = [t for t in self._blinks if t + self.BLINK_PULSE_SEC >= now]
+        return 150 if any(t <= now for t in self._blinks) else 0
+
+
+class SimulatedBrainSignalReader(BrainSignalReader):
+    """A real :class:`BrainSignalReader` (same windowing / blink debounce)
+    reading from a :class:`SimulatedHeadset` instead of the serial port."""
+
+    def __init__(self, headset: Optional[SimulatedHeadset] = None, **kwargs: Any) -> None:
+        self.headset = headset or SimulatedHeadset()
+        kwargs.pop("port", None)
+        kwargs.pop("device_factory", None)
+        super().__init__(port="simulated", device_factory=lambda _port, _baud: self.headset, **kwargs)
+
+    def _collect_window(self, mode_name: str, *, include_features: bool) -> FeatureWindowResult:
+        queued, self.headset.queued_blinks = self.headset.queued_blinks, 0
+        if queued:
+            window_sec = self.window_size * self.sample_interval
+            gap = max(self.blink_debounce_sec + 0.1, min(0.7, window_sec / (queued + 1)))  # > debounce
+            self.headset.blink(queued, gap_sec=gap)
+        return super()._collect_window(mode_name, include_features=include_features)
 
 
 def collect_rule_window(reader: BrainSignalReader, mode_name: str) -> WindowResult:

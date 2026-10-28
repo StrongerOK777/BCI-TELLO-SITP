@@ -8,7 +8,8 @@ DOFBOT 机械臂控制目录。支持键盘控制和脑环控制。公共训练�
 |---|---|
 | `keyboard_control.py` | 机械臂键盘控制入口。 |
 | `brain_control.py` | 机械臂脑环控制入口。 |
-| `arm_hardware.py` | DOFBOT 机械臂硬件适配。 |
+| `arm_hardware.py` | DOFBOT 机械臂硬件适配（真实 `ArmController` 与 `SimulatedArmController`）。 |
+| `arm_device.py` | 统一脑控用的机械臂适配器：意图映射为舵机动作，附加动作为开合夹爪，急停为复位。 |
 | `Arm_Lib (Windows)/` | DOFBOT 底层串口控制库。 |
 | `readme.md` | 本说明文件。 |
 
@@ -54,14 +55,17 @@ src/models/FinalModel.pth
 
 ## 脑控逻辑（EEG → 控制命令）
 
-程序复用公共核心 `bin/`（`bin.eeg` 采集、`bin.models` 模型、`bin.decoding` 解码），本目录只保留机械臂相关的接线。决策管线：
+控制逻辑来自三个设备共用的 `bin/control.py`（详见根目录 README 的“统一控制方式”），本目录只保留机械臂的接线（`arm_device.py`）。决策管线：
 
-1. **眨眼是离散事件**：双眨眼在三个模式间循环（升降 → 转弯 → 前后）；单眨眼开合夹爪，但在转弯模式（默认规则）下改为切换旋转方向。
+1. **眨眼是离散事件**：双眨眼在三个模式间循环（升降 → 前后 → 转弯）；单眨眼开合夹爪，但在转弯模式（默认规则）下改为切换旋转方向。
 2. **模式内产生"原始意图"**：
    - 升降 / 前后：比较窗口内 attention/meditation 计数，带**死区**（两者都低于阈值 → 静止 `rest`）。
    - 转弯（默认 `--turning-source rule`）：`bin.decoding.FocusSteer`，窗口内 attention ≥ `--focus-threshold` 的采样数达到 `--min-decision-count` 时向当前方向旋转，否则 `rest`。
    - 转弯（`--turning-source model`）：调用共享模型的 `predict_proba`，用 **置信度门控** 得到 `left / right / rest`（softmax 最大值低于阈值 → 归入 `rest`，不乱动）。
-3. **多窗投票（滞回）**：原始意图先进入 `VoteWindow`，同一意图在最近若干窗口里达到票数才真正执行——单个噪声窗口无法带动舵机。
+3. **多窗投票（滞回）**：原始意图先进入 `VoteWindow`，同一意图在最近若干窗口里达到票数才真正执行——单个噪声窗口无法带动舵机。机械臂默认 3 窗 2 票，另外两个设备默认关闭。
+4. **安全**：脑环断开（poorSignal=200）时机械臂复位并回到升降模式；程序退出时复位。
+
+也可以用 [统一控制面板](../control_panel/README.md) 在网页上选择本设备，统一显示脑电、模式和急停。
 
 ## 常用参数
 

@@ -1,6 +1,6 @@
 <!-- FOR AI AGENTS - Human readability is a side effect, not a goal -->
 <!-- Managed by agent: keep sections and order; edit content, not structure -->
-<!-- Last updated: 2026-10-26 | Last verified: 2026-10-26 -->
+<!-- Last updated: 2026-10-28 | Last verified: 2026-10-28 -->
 
 # AGENTS.md
 
@@ -14,7 +14,8 @@ BCI-TELLO is a Tongji University undergraduate innovation (SITP) project. A Neur
 <!-- AGENTS-GENERATED:START commands -->
 | Task | Command | Notes |
 |------|---------|-------|
-| Test (all) | `python -m unittest discover -s tests` | Runs from repo root; uses stdlib `unittest`, **not** pytest |
+| Test (all) | `python -m unittest discover -s tests` | Runs from repo root; uses stdlib `unittest`, **not** pytest (panel tests skip without flask) |
+| Control panel | `python control_panel/app.py` | http://127.0.0.1:8765, simulated by default; `--real` allows real hardware |
 | Test (single) | `python -m unittest tests.test_modular_bin.CarBrainControlTests` | Class or `Class.method` |
 | Typecheck | — | None configured |
 | Lint / Format | — | None configured |
@@ -25,33 +26,38 @@ BCI-TELLO is a Tongji University undergraduate innovation (SITP) project. A Neur
 
 ## Setup & environment
 - **Python 3.11.9** is the primary interpreter (`Spaceinvaders/Python2.7ver.` is legacy 2.7 code, not maintained).
-- No root `requirements.txt` or `pyproject.toml`. Install deps with pip; the closest manifest is [MI-DroneControl/requirements.txt](./MI-DroneControl/requirements.txt) (`numpy pygame torch pyserial scikit-learn djitellopy matplotlib`). The full library list is in [README.md](./README.md).
+- No root `requirements.txt` or `pyproject.toml`. Install deps with pip; the closest manifest is [MI-DroneControl/requirements.txt](./MI-DroneControl/requirements.txt) (`numpy pygame torch pyserial scikit-learn djitellopy matplotlib flask`; flask is only needed by `control_panel/`). The full library list is in [README.md](./README.md).
 - **Headset serial port**: edit [bci_interface.py](./bci_interface.py) only — `MINDWAVE_PORT` (Windows `COM5`, macOS `/dev/cu.usbmodem*`), `MINDWAVE_BAUD` (57600). Every training and brain-control entrypoint reads its default from here; never scatter port config into device scripts.
 
 ## Architecture (read before changing behavior)
 - **`bin/`** is the reusable core imported by every device app — do not fork logic into device folders:
-  - `eeg.py` — `BrainSignalReader`, `EEGSnapshot`, feature/window builders, blink debounce.
+  - `eeg.py` — `BrainSignalReader` (optional per-sample `sample_listener`), `EEGSnapshot`, feature/window builders, blink debounce; `SimulatedHeadset` + `SimulatedBrainSignalReader` for demos/tests.
   - `models.py` — `FinalUnifiedModel`, `ModelPredictor` (`predict_window` argmax / `predict_proba` softmax), feature-window combining, model loading.
   - `decoding.py` — signal→intent layer: `Decision`, `gate_by_confidence` (softmax rest-band), `VoteWindow` (majority-vote hysteresis), `FocusSteer` (single blink flips direction, sustained attention executes it). Stdlib-only, device-agnostic.
   - `training.py` — dataset + model variants; trial-grouped evaluation (`load_trials`, `trial_grouped_split`, `trial_windows`, `significance_threshold`, `feature_stats`).
+  - `control.py` — **the one brain-control state machine** for every device: `BrainControlSession` (modes 升降 → 前后 → 转弯 filtered by device capabilities, double blink = next mode, single blink = flip direction in 转弯 / device `aux` elsewhere, attention-vs-meditation rule with dead-band + margin, FocusSteer or gated model for 转弯, optional vote window, disconnect → `emergency_stop`), `ControlConfig`, `StepReport`, the `Device` protocol and `DeviceBase`.
+  - `cli.py` — `BrainSettings` base config + shared flags (`add_brain_arguments` / `settings_from_args`), `build_reader` / `build_session` / `run_brain_signal_test` used by every `brain_control.py`.
+  - `hub.py` — `ControlHub`: owns device + headset + brain thread for the web panel; manual commands only while paused, emergency always; publishes `state/sample/report/action/log` events.
   - `evaluation.py` — cued online test: `build_cue_schedule`, `run_cue_trial` (injected step/poll/clock), `summarize` (accuracy, latency, confusion, significance, Wolpaw ITR), `format_summary_markdown`.
   - `keyboard.py` — `KeyboardReader` (swappable backend). `transport.py` — `JsonHttpClient`.
 - **One shared model**: `TrainUser/train_user.py` trains once and writes `src/models/FinalModel.pth`; all three `brain_control.py` scripts default to that path (override with `--model-path`).
-- **Device apps** (`MI-CarControl/`, `MI-DroneControl/`, `MI-DOFBOT/`) each pair a `keyboard_control.py` with a `brain_control.py`. Each `brain_control.py` inserts `ROOT_DIR` into `sys.path` so it can `from bin.eeg import …`. Hardware is isolated behind an adapter (`drone_hardware.py`, `arm_hardware.py`) with a simulated variant (`SimulatedDroneController`, `SimulatedArmController`) that the tests exercise. All three follow one shape: a `@dataclass *Config`, a controller that takes `reader` / hardware / `predictor` **by constructor**, a `build_controller(...)` factory, and `build_arg_parser` / `config_from_args` / `main`. The arm additionally routes every decision through `bin.decoding` (confidence gate + vote hysteresis) before it moves a servo.
-- **Control logic is a mode state machine**: a double blink toggles modes (e.g. 前后 forward/backward ↔ 转向/转弯 turning ↔ 升降 up/down); attention/meditation drive rule modes; turning defaults to `turning_source="rule"` (`FocusSteer`: single blink flips left/right, focus executes) and the shared model is opt-in via `--turning-source model` (single-channel MI left/right is near chance — see `experiments/public_datasets/README.md`). See `tests/test_modular_bin.py` for the authoritative expected signal sequences.
+- **Device apps** (`MI-CarControl/`, `MI-DroneControl/`, `MI-DOFBOT/`) each pair a `keyboard_control.py` with a `brain_control.py`. Each `brain_control.py` inserts `ROOT_DIR` into `sys.path` so it can `from bin… import …`. Raw hardware sits behind `drone_hardware.py` / `arm_hardware.py` (with `SimulatedDroneController` / `SimulatedArmController`); a **device adapter** (`car_device.py` / `drone_device.py` / `arm_device.py`, subclasses of `bin.control.DeviceBase`) maps intents to hardware and owns the safety action (car 停止, drone land + height bookkeeping, arm home + gripper `aux`). All three `brain_control.py` have one shape: a `@dataclass *Config(BrainSettings)` with only hardware fields/defaults, `build_device(config)`, `build_controller(config, reader=, device=, predictor=) -> BrainControlSession`, and `build_arg_parser` / `config_from_args` / `main`. There is no per-device control logic.
+- **Control panel** (`control_panel/`): `app.py` is a thin Flask layer over `bin.hub.ControlHub` (127.0.0.1 only, simulated by default, real hardware only with `--real` + confirm); `devices.py` is the Flask-free device registry also used by `experiments/online_cue_test/cue_test.py`; `static/index.html` is a single offline page (SSE for live data).
+- **Control logic is one mode state machine** (`bin/control.py`): modes cycle 升降 → 前后 → 转弯 (car: 前后 → 转弯); attention/meditation drive 升降/前后; 转弯 defaults to `turning_source="rule"` (`FocusSteer`: single blink flips left/right, focus executes) and the shared model is opt-in via `--turning-source model` (single-channel MI left/right is near chance — see `experiments/public_datasets/README.md`). See `tests/test_modular_bin.py` for the authoritative expected action sequences per device.
 
 ## File Map
 <!-- AGENTS-GENERATED:START filemap -->
 ```
 bci_interface.py       Headset serial config (single source of truth)
-bin/                   Reusable core: eeg, models, decoding, training, keyboard, transport
+bin/                   Reusable core: eeg, models, decoding, control, cli, hub, training, evaluation, keyboard, transport
 TrainUser/             Common training -> src/models/FinalModel.pth
 src/                   Training artifacts: data/, models/, picture/
 MI-CarControl/         Car: keyboard_control.py, brain_control.py, test_brain.py
 MI-DroneControl/       Tello: keyboard/brain control, predict.py, diagnose.py, drone_hardware.py
 MI-DOFBOT/             DOFBOT arm: keyboard/brain control, arm_hardware.py, Arm_Lib
 Spaceinvaders/         Legacy EEG test game (Python 2.7 + 3.11)
-tests/                 unittest suite for bin/ core + controllers
+tests/                 unittest suites: bin/ core + device sessions + hub (test_modular_bin.py), Flask panel (test_control_panel.py)
+control_panel/         Local web panel: app.py (Flask), devices.py (registry), static/index.html
 experiments/           public_datasets/ offline benchmarks (data not committed); online_cue_test/ cued 左转/右转/静止 test
 ```
 <!-- AGENTS-GENERATED:END filemap -->
@@ -60,9 +66,9 @@ experiments/           public_datasets/ offline benchmarks (data not committed);
 | For | Reference | Key patterns |
 |-----|-----------|--------------|
 | Reusable core module | `bin/eeg.py` | Dataclass results, injectable deps, no device-specific code |
-| Device controller + tests | `MI-DroneControl/brain_control.py` + `tests/test_modular_bin.py` | Controller takes reader/predictor/hardware via constructor so a Fake/Simulated impl can be injected |
+| Device wiring + tests | `MI-DroneControl/drone_device.py` + `MI-DroneControl/brain_control.py` + `tests/test_modular_bin.py` | Adapter subclasses `DeviceBase`; `build_controller(reader=, device=, predictor=)` returns the shared `BrainControlSession` so Fake/Simulated parts can be injected |
 | Hardware isolation | `MI-DroneControl/drone_hardware.py` | Real controller + `SimulatedDroneController` sharing one interface |
-| Signal→intent decoding | `bin/decoding.py` + `MI-DOFBOT/brain_control.py` | Confidence gate + majority-vote hysteresis; decode kept separate from actuation and unit-tested |
+| Signal→intent decoding | `bin/decoding.py` + `bin/control.py` | Confidence gate, vote hysteresis, FocusSteer; decode kept separate from actuation (device adapters) and unit-tested |
 
 ## Code standards & conventions
 - **Root cause, minimal diff.** Fix the underlying issue; keep changes surgical and local. Do not reformat or churn unrelated code.
@@ -82,7 +88,7 @@ experiments/           public_datasets/ offline benchmarks (data not committed);
 | Adding a dependency | Ask first — deps are installed by hand, not locked |
 
 ## Testing & verification
-- **Framework:** stdlib `unittest`, one suite in `tests/test_modular_bin.py`. No pytest, no network, no real hardware.
+- **Framework:** stdlib `unittest`: `tests/test_modular_bin.py` (core, device sessions, hub) and `tests/test_control_panel.py` (Flask routes via `test_client`, skipped if flask is missing). No pytest, no network, no real hardware.
 - **Assert invariants, not internals.** Feed a list of `WindowResult` / `FeatureWindowResult` into a controller built from `FakeReader` / `FakePredictor` / `FakeSender` + a `Simulated*Controller`, then assert the exact recorded `actions` / `signals` sequence. `bin/` primitives (`VoteWindow`, `gate_by_confidence`, feature builders) get direct unit tests.
 - **Ship logic changes with a test** that pins the new sequence; every device controller and every `bin/` primitive already has coverage to extend.
 - **Run + show:** `python -m unittest discover -s tests` from the repo root after touching `bin/` or any controller, and paste the `Ran N tests … OK` line before claiming green.
