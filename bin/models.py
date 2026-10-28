@@ -184,6 +184,22 @@ class ModelPredictor:
         return predict_proba_window(self.model, feature_window, self.feature_mean, self.feature_std)
 
 
+def report_model(predictor: Any) -> bool:
+    """Load ``predictor`` once and print its evaluation metadata.
+
+    Returns ``False`` (after a Chinese warning) instead of raising, so a
+    controller can start and simply stay idle when the model is unusable.
+    """
+
+    try:
+        predictor.load()
+    except Exception as exc:
+        print(f"模型加载失败：{exc}，模型驱动的动作将保持静止")
+        return False
+    print_model_metadata(getattr(predictor, "metadata", {}) or {})
+    return True
+
+
 def print_model_metadata(metadata: dict) -> None:
     strict = metadata.get("test_accuracy_strict")
     relaxed = metadata.get("test_accuracy_relaxed")
@@ -192,3 +208,13 @@ def print_model_metadata(metadata: dict) -> None:
         print(f"Test Accuracy (strict): {strict * 100:.2f}%")
     if relaxed is not None:
         print(f"Test Accuracy (relaxed): {relaxed * 100:.2f}%")
+    threshold = metadata.get("significance_threshold")
+    if threshold is None:
+        print("提示：该模型使用旧版随机窗口划分训练，准确率可能偏高，建议重新训练")
+        return
+    print(
+        f"测试试次：{metadata.get('n_test_trials')}（按轮次分组），"
+        f"显著性阈值：{threshold * 100:.1f}%"
+    )
+    if not metadata.get("significant", False):
+        print("⚠ 模型未显著优于随机猜测，转弯模式建议使用 --turning-source rule")

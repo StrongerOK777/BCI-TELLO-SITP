@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>脑控控制面板</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f4f1; --surface: #ffffff; --surface-2: #f8f8f6; --border: #e3e2dd;
+    --text: #0b0b0b; --text-2: #52514e; --text-3: #8a8984;
+    --accent: #2a78d6; --accent-ink: #ffffff; --accent-soft: #e6effa;
+    --series-1: #2a78d6; --series-2: #1baf7a;
+    --good: #0f8a4f; --good-soft: #e3f4ea; --warn: #b26b00; --warn-soft: #fbf0dc;
+    --danger: #d23b3b; --danger-ink: #ffffff; --danger-soft: #fbe6e6;
+    --grid: #ecebe7; --shadow: 0 1px 2px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #121211; --surface: #1a1a19; --surface-2: #222220; --border: #2f2f2c;
+      --text: #f0efec; --text-2: #c3c2b7; --text-3: #8f8e86;
+      --accent: #3987e5; --accent-ink: #ffffff; --accent-soft: #1d2a3b;
+      --series-1: #3987e5; --series-2: #199e70;
+      --good: #3ec07a; --good-soft: #17301f; --warn: #e0a23a; --warn-soft: #33270f;
+      --danger: #e66767; --danger-ink: #1a0b0b; --danger-soft: #3a1c1c;
+      --grid: #2a2a28; --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1a1a19; --surface-2: #222220; --border: #2f2f2c;
+    --text: #f0efec; --text-2: #c3c2b7; --text-3: #8f8e86;
+    --accent: #3987e5; --accent-ink: #ffffff; --accent-soft: #1d2a3b;
+    --series-1: #3987e5; --series-2: #199e70;
+    --good: #3ec07a; --good-soft: #17301f; --warn: #e0a23a; --warn-soft: #33270f;
+    --danger: #e66767; --danger-ink: #1a0b0b; --danger-soft: #3a1c1c;
+    --grid: #2a2a28; --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; white-space: nowrap; }
+  .pill { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); white-space: nowrap; }
+  .pill.ok { background: var(--good-soft); color: var(--good); border-color: transparent; }
+  .pill.live { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+  .pill.bad { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+  .spacer { flex: 1; }
+  button {
+    font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); padding: 8px 14px; min-height: 36px;
+  }
+  button:hover:not(:disabled) { border-color: var(--text-3); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  button.estop {
+    background: var(--danger); color: var(--danger-ink); border: none; font-weight: 700;
+    padding: 10px 18px; min-height: 44px; letter-spacing: .05em; white-space: nowrap; flex-shrink: 0;
+  }
+  main { display: grid; grid-template-columns: minmax(280px, 340px) 1fr; gap: 16px; padding: 16px; max-width: 1280px; margin: 0 auto; }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); min-width: 0; }
+  section h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--text-2); }
+  .devices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .device { text-align: center; padding: 10px 4px; }
+  .device.selected { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  label.row { display: flex; align-items: center; gap: 8px; margin: 8px 0; color: var(--text-2); }
+  label.row.disabled { color: var(--text-3); }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .modes { display: flex; gap: 6px; flex-wrap: wrap; }
+  .mode { padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); }
+  .mode.active { background: var(--accent); border-color: transparent; color: var(--accent-ink); font-weight: 600; }
+  .status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .stat { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+  .stat .k { font-size: 12px; color: var(--text-3); }
+  .stat .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .decision { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); color: var(--text-2); min-height: 42px; overflow-wrap: anywhere; }
+  .decision b { color: var(--text); }
+  .chart-wrap { position: relative; height: 200px; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-2); margin-bottom: 6px; flex-wrap: wrap; }
+  .sw { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+  .blink-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--grid); display: inline-block; vertical-align: middle; transition: background .1s; }
+  .blink-dot.on { background: var(--warn); }
+  .pad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; max-width: 360px; }
+  .pad button { min-height: 48px; }
+  .pad .wide { grid-column: span 3; }
+  .kbd { font-size: 11px; color: var(--text-3); display: block; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .param { display: grid; grid-template-columns: 1fr 52px; gap: 8px; align-items: center; margin: 6px 0; color: var(--text-2); }
+  .param output { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+  select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+  .log { max-height: 260px; overflow-y: auto; font-size: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .log div { padding: 3px 0; border-bottom: 1px dashed var(--grid); color: var(--text-2); overflow-wrap: anywhere; }
+  .log .warn { color: var(--warn); } .log .error { color: var(--danger); } .log .act { color: var(--text); }
+  .hint { font-size: 12px; color: var(--text-3); margin: 6px 0 0; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--text); color: var(--surface); padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  .toast.show { opacity: 1; }
+  [hidden] { display: none !important; }
+  @media (max-width: 860px) {
+    main { display: flex; flex-direction: column; padding: 16px; }
+    .col { display: contents; }
+    #card-device { order: 1; } #card-brain { order: 2; } #card-eeg { order: 3; } #card-manual { order: 4; }
+    #sim-card { order: 5; } #card-params { order: 6; } #card-log { order: 7; }
+    header { gap: 8px; }
+    .status-grid { grid-template-columns: repeat(2, 1fr); }
+    header h1 { font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>脑控控制面板</h1>
+  <span id="pill-conn" class="pill">未连接</span>
+  <span id="pill-brain" class="pill" hidden>脑控运行中</span>
+  <span class="spacer"></span>
+  <button id="estop" class="estop" title="快捷键 Esc">急停</button>
+</header>
+
+<main>
+  <div class="col">
+    <section id="card-device">
+      <h2>设备</h2>
+      <div class="devices" id="devices"></div>
+      <label class="row" id="real-hw-row"><input type="checkbox" id="real-hw"> 真实硬件 <span id="real-hw-note" class="hint"></span></label>
+      <label class="row"><input type="checkbox" id="real-headset"> 真实脑环（串口见 bci_interface.py）</label>
+      <div class="btnrow">
+        <button id="connect" class="primary">连接</button>
+        <button id="disconnect">断开</button>
+      </div>
+    </section>
+
+    <section id="card-params">
+      <h2>参数</h2>
+      <div class="param"><span>专注阈值 focus_threshold</span><output id="o-focus"></output></div>
+      <input type="range" id="p-focus" min="20" max="90" step="1">
+      <div class="param"><span>决策计数 min_decision_count</span><output id="o-min"></output></div>
+      <input type="range" id="p-min" min="5" max="30" step="1">
+      <div class="param"><span>差值 decision_margin</span><output id="o-margin"></output></div>
+      <input type="range" id="p-margin" min="0" max="15" step="1">
+      <div class="param"><span>投票 vote_window / vote_min</span><output id="o-vote"></output></div>
+      <div class="btnrow" style="margin-top:4px">
+        <select id="p-vote"><option value="1/1">关闭</option><option value="3/2">3 窗 2 票</option><option value="5/3">5 窗 3 票</option></select>
+        <select id="p-source"><option value="rule">转弯：专注 + 单眨眼</option><option value="model">转弯：模型</option></select>
+      </div>
+      <p class="hint">修改立即生效；连接新设备时沿用。</p>
+    </section>
+
+    <section id="sim-card" hidden>
+      <h2>模拟脑环</h2>
+      <div class="param"><span>attention</span><output id="o-att"></output></div>
+      <input type="range" id="s-att" min="0" max="100" step="1">
+      <div class="param"><span>meditation</span><output id="o-med"></output></div>
+      <input type="range" id="s-med" min="0" max="100" step="1">
+      <div class="param"><span>poorSignal（200 = 断开）</span><output id="o-poor"></output></div>
+      <input type="range" id="s-poor" min="0" max="200" step="10">
+      <div class="btnrow">
+        <button id="blink1">单眨眼</button>
+        <button id="blink2">双眨眼</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section id="card-brain">
+      <h2>脑控</h2>
+      <div class="btnrow" style="margin-top:0">
+        <button id="brain-start" class="primary">启动脑控</button>
+        <button id="brain-stop">暂停脑控</button>
+      </div>
+      <div class="status-grid">
+        <div class="stat"><div class="k">模式</div><div class="v" id="v-mode">—</div></div>
+        <div class="stat"><div class="k">转弯方向</div><div class="v" id="v-dir">—</div></div>
+        <div class="stat"><div class="k">信号</div><div class="v" id="v-signal">—</div></div>
+      </div>
+      <div class="modes" id="modes" style="margin-top:10px"></div>
+      <div class="decision" id="decision">连接设备后启动脑控；双眨眼切换模式，转弯模式下单眨眼换方向、保持专注执行。</div>
+    </section>
+
+    <section id="card-eeg">
+      <h2>实时脑电</h2>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--series-1)"></i>attention</span>
+        <span><i class="sw" style="background:var(--series-2)"></i>meditation</span>
+        <span><i class="sw" style="background:var(--text-3)"></i>专注阈值</span>
+        <span>眨眼 <i class="blink-dot" id="blink-dot"></i></span>
+      </div>
+      <div class="chart-wrap"><canvas id="chart"></canvas></div>
+    </section>
+
+    <section id="card-manual">
+      <h2>手动控制 <span class="hint" style="font-weight:400">脑控暂停时可用</span></h2>
+      <div class="pad" id="pad">
+        <button data-intent="up">上升<span class="kbd">↑</span></button>
+        <button data-intent="forward">前进<span class="kbd">W</span></button>
+        <button data-intent="down">下降<span class="kbd">↓</span></button>
+        <button data-intent="left">左转<span class="kbd">A</span></button>
+        <button data-intent="rest">静止<span class="kbd">空格</span></button>
+        <button data-intent="right">右转<span class="kbd">D</span></button>
+        <button data-intent="aux">夹爪<span class="kbd">G</span></button>
+        <button data-intent="backward">后退<span class="kbd">S</span></button>
+        <span></span>
+      </div>
+    </section>
+
+    <section id="card-log">
+      <h2>日志</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let state = null;
+  let selected = null;
+  let lastConnected = null;
+  const samples = [];          // {t, a, m}
+  const MAX_SAMPLES = 300;     // 30 s at 10 Hz
+
+  function toast(msg) {
+    const el = $("toast");
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => el.classList.remove("show"), 2600);
+  }
+
+  async function api(path, body) {
+    const res = await fetch(path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(data.error || `请求失败（${res.status}）`); throw new Error(data.error); }
+    return data;
+  }
+
+  function log(text, cls) {
+    const box = $("log");
+    const row = document.createElement("div");
+    const t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    row.textContent = `${t}  ${text}`;
+    if (cls) row.className = cls;
+    box.prepend(row);
+    while (box.childElementCount > 200) box.lastChild.remove();
+  }
+
+  // ---- rendering -----------------------------------------------------------
+  function render(s) {
+    state = s;
+    const connectedKey = s.connected ? s.device : null;
+    if (connectedKey !== lastConnected) { if (connectedKey) selected = connectedKey; lastConnected = connectedKey; }
+    if (!selected) selected = s.devices[0] && s.devices[0].key;
+    const devBox = $("devices");
+    devBox.innerHTML = "";
+    for (const d of s.devices) {
+      const b = document.createElement("button");
+      b.className = "device" + (d.key === selected ? " selected" : "");
+      b.textContent = d.label;
+      b.onclick = () => { selected = d.key; render(state); };
+      devBox.appendChild(b);
+    }
+    $("real-hw").disabled = !s.allow_real;
+    $("real-hw-row").classList.toggle("disabled", !s.allow_real);
+    $("real-hw-note").textContent = s.allow_real ? "" : "（启动时加 --real 才可用）";
+    if (!s.allow_real) $("real-hw").checked = false;
+
+    const pc = $("pill-conn");
+    if (s.connected) {
+      const label = (s.devices.find((d) => d.key === s.device) || {}).label || s.device;
+      pc.textContent = `${label} · ${s.real_hardware ? "真机" : "模拟"} · ${s.real_headset ? "真实脑环" : "模拟脑环"}`;
+      pc.className = "pill ok";
+    } else { pc.textContent = "未连接"; pc.className = "pill"; }
+    $("pill-brain").hidden = !s.running;
+    $("pill-brain").className = "pill live";
+    if (s.halted && !s.running && s.connected) { pc.textContent += " · 已急停"; pc.className = "pill bad"; }
+
+    $("connect").textContent = s.connected ? "重新连接" : "连接";
+    $("disconnect").disabled = !s.connected;
+    $("brain-start").disabled = !s.connected || s.running;
+    $("brain-stop").disabled = !s.running;
+
+    $("v-mode").textContent = s.mode_name || "—";
+    $("v-dir").textContent = s.direction ? (s.direction === "left" ? "← 左" : "右 →") : "—";
+    const modes = $("modes");
+    modes.innerHTML = "";
+    for (const m of s.modes) {
+      const chip = document.createElement("span");
+      chip.className = "mode" + (m.key === s.mode ? " active" : "");
+      chip.textContent = m.name;
+      modes.appendChild(chip);
+    }
+
+    for (const b of $("pad").querySelectorAll("button")) {
+      const intent = b.dataset.intent;
+      const supported = intent === "rest" || s.capabilities.includes(intent);
+      b.hidden = s.connected && !supported;
+      b.disabled = !s.connected || s.running;
+    }
+
+    const c = s.config || {};
+    if (c.focus_threshold !== undefined) {
+      setParam("p-focus", "o-focus", c.focus_threshold);
+      setParam("p-min", "o-min", c.min_decision_count);
+      setParam("p-margin", "o-margin", c.decision_margin);
+      const vote = `${c.vote_window}/${c.vote_min}`;
+      $("o-vote").textContent = vote === "1/1" ? "关闭" : vote;
+      if ([...$("p-vote").options].some((o) => o.value === vote)) $("p-vote").value = vote;
+      $("p-source").value = c.turning_source;
+    }
+
+    $("sim-card").hidden = !s.headset;
+    if (s.headset && document.activeElement?.type !== "range") {
+      setParam("s-att", "o-att", s.headset.attention);
+      setParam("s-med", "o-med", s.headset.meditation);
+      setParam("s-poor", "o-poor", s.headset.poor_signal);
+    }
+    if (s.last_report) showDecision(s.last_report);
+  }
+
+  function setParam(inputId, outId, value) {
+    if (document.activeElement === $(inputId)) return;
+    $(inputId).value = value;
+    $(outId).textContent = value;
+  }
+
+  function showDecision(r) {
+    const head = `<b>${r.mode_name}</b> · Attention ${r.attention_count} / Meditation ${r.meditation_count}`
+      + (r.blink_count ? ` · 眨眼 ${r.blink_count}` : "");
+    const el = $("decision");
+    el.innerHTML = "";
+    const h = document.createElement("div"); h.innerHTML = head;
+    const m = document.createElement("div"); m.textContent = r.message;
+    el.append(h, m);
+  }
+
+  // ---- chart -----------------------------------------------------------------
+  const canvas = $("chart");
+  const ctx = canvas.getContext("2d");
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const left = 30, right = 8, top = 6, bottom = 18;
+    const pw = w - left - right, ph = h - top - bottom;
+    const y = (v) => top + ph * (1 - v / 100);
+    ctx.font = "11px sans-serif"; ctx.fillStyle = css("--text-3"); ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1;
+    for (const v of [0, 25, 50, 75, 100]) {
+      ctx.beginPath(); ctx.moveTo(left, y(v)); ctx.lineTo(w - right, y(v)); ctx.stroke();
+      ctx.fillText(String(v), 4, y(v) + 4);
+    }
+    ctx.fillText("最近 30 秒", left, h - 4);
+    const focus = state && state.config ? state.config.focus_threshold : null;
+    if (focus !== null && focus !== undefined) {
+      ctx.setLineDash([4, 4]); ctx.strokeStyle = css("--text-3");
+      ctx.beginPath(); ctx.moveTo(left, y(focus)); ctx.lineTo(w - right, y(focus)); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const x = (i) => left + pw * (i / (MAX_SAMPLES - 1)) + pw * ((MAX_SAMPLES - samples.length) / (MAX_SAMPLES - 1));
+    for (const [key, color] of [["a", "--series-1"], ["m", "--series-2"]]) {
+      if (samples.length < 2) break;
+      ctx.strokeStyle = css(color); ctx.lineWidth = 2; ctx.lineJoin = "round";
+      ctx.beginPath();
+      samples.forEach((s, i) => { const px = x(i), py = y(s[key]); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+      ctx.stroke();
+    }
+  }
+  let drawQueued = false;
+  function queueDraw() { if (!drawQueued) { drawQueued = true; requestAnimationFrame(() => { drawQueued = false; draw(); }); } }
+  window.addEventListener("resize", queueDraw);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", queueDraw);
+
+  // ---- live stream ---------------------------------------------------------
+  function connectStream() {
+    const es = new EventSource("/api/stream");
+    es.addEventListener("state", (e) => render(JSON.parse(e.data)));
+    es.addEventListener("sample", (e) => {
+      const s = JSON.parse(e.data);
+      samples.push({ t: s.t, a: s.attention, m: s.meditation });
+      if (samples.length > MAX_SAMPLES) samples.shift();
+      $("v-signal").textContent = s.poor_signal >= 200 ? "断开" : s.poor_signal > 20 ? `差 ${s.poor_signal}` : "良好";
+      $("blink-dot").classList.toggle("on", s.blink > 0);
+      queueDraw();
+    });
+    es.addEventListener("report", (e) => {
+      const r = JSON.parse(e.data);
+      showDecision(r);
+      const cls = r.event === "disconnect" ? "error" : r.event === "invalid" ? "warn" : r.executed ? "act" : "";
+      log(`[${r.mode_name}] ${r.message}`, cls);
+    });
+    es.addEventListener("action", (e) => {
+      const a = JSON.parse(e.data);
+      log(`${a.source === "emergency" ? "急停" : "手动"}：${a.message}`, a.source === "emergency" ? "error" : a.executed ? "act" : "warn");
+    });
+    es.addEventListener("log", (e) => {
+      const l = JSON.parse(e.data);
+      if (!/^手动|^急停/.test(l.message)) log(l.message, l.level === "info" ? "" : l.level);
+    });
+    es.onerror = () => { $("pill-conn").textContent = "与服务断开，重连中…"; $("pill-conn").className = "pill bad"; };
+  }
+
+  // ---- controls ------------------------------------------------------------
+  $("connect").onclick = async () => {
+    const real = $("real-hw").checked;
+    if (real && !confirm("将连接真实硬件，设备会真的运动。确认周围安全、并已先用模拟设备测试过？")) return;
+    samples.length = 0;
+    await api("/api/connect", { device: selected, real_hardware: real, real_headset: $("real-headset").checked, confirm: real });
+  };
+  $("disconnect").onclick = () => api("/api/disconnect", {});
+  $("brain-start").onclick = () => api("/api/brain/start", {});
+  $("brain-stop").onclick = () => api("/api/brain/stop", {});
+  $("estop").onclick = () => api("/api/emergency", {}).then((r) => toast(`急停：${r.message}`));
+  for (const b of $("pad").querySelectorAll("button")) b.onclick = () => command(b.dataset.intent);
+  function command(intent) {
+    if (!state || !state.connected) return toast("请先连接设备");
+    if (state.running) return toast("脑控运行中，请先暂停");
+    api("/api/command", { intent }).catch(() => {});
+  }
+
+  function bindRange(inputId, outId, send) {
+    const input = $(inputId);
+    input.addEventListener("input", () => { $(outId).textContent = input.value; });
+    input.addEventListener("change", () => send(Number(input.value)).catch(() => {}));
+  }
+  bindRange("p-focus", "o-focus", (v) => api("/api/config", { focus_threshold: v }));
+  bindRange("p-min", "o-min", (v) => api("/api/config", { min_decision_count: v }));
+  bindRange("p-margin", "o-margin", (v) => api("/api/config", { decision_margin: v }));
+  $("p-vote").onchange = () => {
+    const [win, min] = $("p-vote").value.split("/").map(Number);
+    api("/api/config", { vote_window: win, vote_min: min }).catch(() => {});
+  };
+  $("p-source").onchange = () => api("/api/config", { turning_source: $("p-source").value }).catch(() => {});
+  bindRange("s-att", "o-att", (v) => api("/api/sim-headset", { attention: v }));
+  bindRange("s-med", "o-med", (v) => api("/api/sim-headset", { meditation: v }));
+  bindRange("s-poor", "o-poor", (v) => api("/api/sim-headset", { poor_signal: v }));
+  $("blink1").onclick = () => api("/api/sim-headset", { blinks: 1 });
+  $("blink2").onclick = () => api("/api/sim-headset", { blinks: 2 });
+
+  const KEYS = { w: "forward", s: "backward", a: "left", d: "right", ArrowUp: "up", ArrowDown: "down", " ": "rest", g: "aux" };
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); $("estop").click(); return; }
+    const tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "select" || tag === "textarea" || e.metaKey || e.ctrlKey || e.altKey) return;
+    const intent = KEYS[e.key] || KEYS[e.key.toLowerCase()];
+    if (!intent || !state || !state.connected) return;
+    if (intent !== "rest" && !state.capabilities.includes(intent)) return;
+    e.preventDefault();
+    command(intent);
+  });
+
+  api("/api/state").then(render).catch(() => {});
+  connectStream();
+  queueDraw();
+})();
+</script>
+</body>
+</html>

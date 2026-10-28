@@ -5,3 +5,4 @@ pyserial
 scikit-learn
 djitellopy
 matplotlib
+flask

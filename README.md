@@ -11,6 +11,7 @@
 - [脑环接口配置](#bci-interface)
 - [公共训练与模型产物](#train-user)
 - [硬件控制使用指南](#hardware-control)
+- [统一控制方式与控制面板](#control-panel)
 - [仓库结构](#repo-structure)
 - [后续计划](#future)
 
@@ -47,6 +48,7 @@
   DateTime              6.0
   djitellopy            2.5.0
   filelock              3.20.3
+  flask                 3.1.3
   fonttools             4.61.1
   fsspec                2026.1.0
   idna                  3.11
@@ -93,7 +95,7 @@
   pip install numpy pandas matplotlib
   pip install opencv-python opencv-contrib-python pillow
   pip install torch pygame
-  pip install requests networkx sympy
+  pip install requests networkx sympy flask
   pip install av djitellopy tellopy NeuroPy
   pip install scikit-learn
   ```
@@ -195,6 +197,27 @@ src/models/FinalModel.pth
 --model-path <模型路径>
 ```
 
+<a name="control-panel"></a>
+
+# 统一控制方式与控制面板（Control Panel）
+
+小车、无人机、机械臂共用一套脑控方式（`bin/control.py` 的 `BrainControlSession`），各设备目录只保留硬件适配器（`car_device.py` / `drone_device.py` / `arm_device.py`）：
+
+- **模式**按 升降 → 前后 → 转弯 循环，只保留设备支持的模式（小车：前后 → 转弯）；**双眨眼**切换模式。
+- **单眨眼**：转弯模式下切换左/右方向（本窗口不动作）；其他模式执行设备的附加动作（机械臂开合夹爪，小车 / 无人机无附加动作）。
+- **升降 / 前后**：attention 与 meditation 计数都低于 `--min-decision-count` 或相差小于 `--decision-margin` 时静止，否则专注更高 → 上升 / 前进，放松更高 → 下降 / 后退。
+- **转弯**：默认“专注执行、单眨眼换方向”（窗口内足够多的采样 attention ≥ `--focus-threshold` 时向当前方向转一次）；`--turning-source model` 改用共享模型加置信度门控。
+- **多窗投票**（`--vote-window` / `--vote-min`）默认关闭，机械臂默认 3 窗 2 票。
+- **安全**：脑环断开时执行设备的安全动作（小车停止、无人机降落、机械臂复位）并回到起始模式；信号差只报警；模型出错按静止处理；无人机未起飞时只接受起飞。
+
+本地网页控制面板（需要 `pip install flask`）：
+
+```bash
+python control_panel/app.py
+```
+
+打开 <http://127.0.0.1:8765>，可以选择设备、实时查看脑电和解码结果、启动 / 暂停脑控、手动按键控制、一键急停（Esc）。默认使用模拟设备和模拟脑环；加 `--real` 启动后才允许在页面上（二次确认）连接真实硬件。详见 [control_panel/README.md](./control_panel/README.md)。
+
 <a name="hardware-control"></a>
 
 # 硬件控制使用指南（Hardware Control）
@@ -206,7 +229,8 @@ src/models/FinalModel.pth
 ## 文件概况：
 
 - [keyboard_control.py](./MI-CarControl/keyboard_control.py)：键盘控制小车，通过 HTTP 向小车发送前进、后退、左转、右转和停止指令。
-- [brain_control.py](./MI-CarControl/brain_control.py)：脑环控制小车，默认使用 `src/models/FinalModel.pth`。
+- [brain_control.py](./MI-CarControl/brain_control.py)：脑环控制小车的命令行入口（统一控制方式）。
+- [car_device.py](./MI-CarControl/car_device.py)：小车适配器和 HTTP 客户端 `CarSignalClient`。
 - [test_brain.py](./MI-CarControl/test_brain.py)：独立测试脑环信号，不连接小车，用于排查串口和信号质量问题。
 - [neuropy.py](./MI-CarControl/neuropy.py)：小车目录保留的脑环驱动副本。
 - [README.md](./MI-CarControl/README.md)：小车目录说明。
@@ -238,14 +262,15 @@ python MI-CarControl/brain_control.py --test-brain
 python MI-CarControl/brain_control.py --dry-run
 ```
 
-小车脑控逻辑：默认进入前后模式；双眨眼切换前后模式和转向模式；前后模式通过注意力/冥想判断前进或后退，转向模式通过模型预测 `left / right / rest` 判断左转、右转或停止。
+小车脑控逻辑：使用上面的统一控制方式，只有前后 → 转弯两个模式，默认进入前后模式；静止和脑环断开时发送“停止”。
 
 ## 2. TELLO 无人机控制（MI-DroneControl）
 
 ## 文件概况：
 
 - [keyboard_control.py](./MI-DroneControl/keyboard_control.py)：键盘控制 Tello，并显示摄像头画面。
-- [brain_control.py](./MI-DroneControl/brain_control.py)：脑环控制 Tello，无人机动作由规则信号和共享模型共同决定。
+- [brain_control.py](./MI-DroneControl/brain_control.py)：脑环控制 Tello 的命令行入口（统一控制方式，模式 升降 → 前后 → 转弯；未起飞时只接受起飞，断开或退出时自动降落）。
+- [drone_device.py](./MI-DroneControl/drone_device.py)：无人机适配器，负责起飞 / 降落和高度记录。
 - [predict.py](./MI-DroneControl/predict.py)：连续读取脑环窗口，并输出模型预测结果。
 - [diagnose.py](./MI-DroneControl/diagnose.py)：脑环信号诊断程序，用于查看 `attention`、`meditation`、`blinkStrength`、`poorSignal` 等状态。
 - [drone_hardware.py](./MI-DroneControl/drone_hardware.py)：Tello 硬件适配层。
@@ -283,7 +308,8 @@ python MI-DroneControl/brain_control.py
 ## 文件概况：
 
 - [keyboard_control.py](./MI-DOFBOT/keyboard_control.py)：键盘控制 DOFBOT 机械臂。
-- [brain_control.py](./MI-DOFBOT/brain_control.py)：脑环控制 DOFBOT 机械臂，默认使用共享模型。
+- [brain_control.py](./MI-DOFBOT/brain_control.py)：脑环控制 DOFBOT 机械臂的命令行入口（统一控制方式）。
+- [arm_device.py](./MI-DOFBOT/arm_device.py)：机械臂适配器，附加动作为开合夹爪，急停为复位。
 - [arm_hardware.py](./MI-DOFBOT/arm_hardware.py)：DOFBOT 硬件适配层。
 - [Arm_Lib (Windows)/](./MI-DOFBOT/Arm_Lib%20(Windows)/)：机械臂底层串口库。
 - [readme.md](./MI-DOFBOT/readme.md)：机械臂目录说明。
@@ -308,7 +334,7 @@ python MI-DOFBOT/brain_control.py --dry-run
 python MI-DOFBOT/brain_control.py --arm-port COM4
 ```
 
-机械臂脑控逻辑：双眨眼在升降、转弯、前后三个模式间循环，单眨眼开合夹爪；升降/前后模式用注意力/冥想计数（带死区）判断方向，转弯模式用共享模型并做置信度门控；所有方向决策都经过多窗投票平滑，单个噪声窗口不会误动作。首次务必先 `--dry-run` 或 `--simulated`。
+机械臂脑控逻辑：使用上面的统一控制方式（升降 → 前后 → 转弯），单眨眼开合夹爪（转弯模式下改为切换旋转方向），默认 3 窗 2 票的多窗投票，单个噪声窗口不会误动作。首次务必先 `--dry-run` 或 `--simulated`。
 
 <a name="future"></a>
 
@@ -317,6 +343,7 @@ python MI-DOFBOT/brain_control.py --arm-port COM4
 - 保持 `bci_interface.py` 作为统一脑环接口，避免串口配置散落在各个程序中。
 - 继续优化 `TrainUser/` 的训练流程，让一次训练得到的模型可以更稳定地服务三类硬件。
 - 公开数据集测试结论见 [experiments/public_datasets/README.md](./experiments/public_datasets/README.md)：单通道前额脑环难以区分左 / 右手运动想象，适合专注度、任务 / 静息开关与眨眼指令。
+- 实机在线性能用 [口令测试](./experiments/online_cue_test/README.md) 记录：`python experiments/online_cue_test/cue_test.py --device drone --subject S01`。
 - 后续可以在现有架构上继续开发 SSVEP 控制方式。
 
 <a name="repo-structure"></a>
@@ -331,8 +358,10 @@ BCI-TELLO/
 │   ├── train_user.py                 # 采集数据并训练共享模型
 │   ├── neuropy.py                    # NeuroSky / MindWave 驱动
 │   └── README.md
+├── control_panel/                    # 本地网页控制面板（Flask）：app.py、devices.py、static/index.html
 ├── experiments/
-│   └── public_datasets/              # 公开数据集基准测试（Mendeley NeuroSky、PhysioNet 运动想象）
+│   ├── public_datasets/              # 公开数据集基准测试（Mendeley NeuroSky、PhysioNet 运动想象）
+│   └── online_cue_test/              # 口令测试：提示左转/右转/静止，统计命中率、耗时、ITR
 ├── src/                              # 公共训练产物
 │   ├── data/                         # 训练数据
 │   ├── models/                       # 共享模型，默认 FinalModel.pth
@@ -341,6 +370,7 @@ BCI-TELLO/
 ├── MI-CarControl/                    # 小车控制
 │   ├── keyboard_control.py           # 小车键盘控制
 │   ├── brain_control.py              # 小车脑环控制
+│   ├── car_device.py                 # 小车适配器（统一控制方式）
 │   ├── test_brain.py                 # 小车侧脑环信号测试
 │   ├── neuropy.py
 │   └── README.md
@@ -350,17 +380,24 @@ BCI-TELLO/
 │   ├── predict.py                    # 模型预测测试
 │   ├── diagnose.py                   # 脑环信号诊断
 │   ├── drone_hardware.py             # Tello 硬件适配
+│   ├── drone_device.py               # 无人机适配器（统一控制方式）
 │   ├── neuropy.py
 │   └── README.md
 ├── MI-DOFBOT/                        # DOFBOT 机械臂控制
 │   ├── keyboard_control.py           # 机械臂键盘控制
 │   ├── brain_control.py              # 机械臂脑环控制
 │   ├── arm_hardware.py               # 机械臂硬件适配
+│   ├── arm_device.py                 # 机械臂适配器（统一控制方式）
 │   ├── Arm_Lib (Windows)/            # 底层机械臂库
 │   └── readme.md
 ├── bin/                              # 可迁移基础模块
-│   ├── eeg.py                        # EEG 采集和特征构建
+│   ├── eeg.py                        # EEG 采集、特征构建、模拟脑环
 │   ├── models.py                     # 模型结构和预测工具
+│   ├── decoding.py                   # 置信度门控、多窗投票、FocusSteer
+│   ├── control.py                    # 统一脑控会话（模式状态机 + 解码）
+│   ├── cli.py                        # 三个 brain_control.py 共用的参数与组装
+│   ├── hub.py                        # 控制面板后端：设备 / 脑环 / 脑控线程 / 急停
+│   ├── evaluation.py                 # 口令测试统计
 │   ├── training.py                   # 可复用训练工具
 │   ├── keyboard.py                   # 通用键盘读取
 │   └── transport.py                  # 通用 JSON HTTP 传输
