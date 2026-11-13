@@ -65,6 +65,16 @@ class ControlPanelRouteTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: not self.hub.running))
         self.assertEqual(self.hub.session.device.height, 0)  # landed
 
+    def test_arm_state_exposes_status_and_extra_commands(self):
+        state = self.client.post("/api/connect", json={"device": "arm"}).get_json()
+        self.assertEqual(sorted(state["device_status"]["angles"]), ["1", "2", "3", "4", "5", "6"])
+        self.assertIn("home", [item["key"] for item in state["extra_actions"]])
+
+        homed = self.client.post("/api/command", json={"intent": "home"}).get_json()
+
+        self.assertTrue(homed["executed"])
+        self.assertEqual(homed["message"], "复位")
+
     def test_config_validation(self):
         self.client.post("/api/connect", json={"device": "car"})
 

@@ -1,6 +1,6 @@
 <!-- FOR AI AGENTS - Human readability is a side effect, not a goal -->
 <!-- Managed by agent: keep sections and order; edit content, not structure -->
-<!-- Last updated: 2026-10-28 | Last verified: 2026-10-28 -->
+<!-- Last updated: 2026-11-13 | Last verified: 2026-11-13 -->
 
 # AGENTS.md
 
@@ -35,13 +35,13 @@ BCI-TELLO is a Tongji University undergraduate innovation (SITP) project. A Neur
   - `models.py` — `FinalUnifiedModel`, `ModelPredictor` (`predict_window` argmax / `predict_proba` softmax), feature-window combining, model loading.
   - `decoding.py` — signal→intent layer: `Decision`, `gate_by_confidence` (softmax rest-band), `VoteWindow` (majority-vote hysteresis), `FocusSteer` (single blink flips direction, sustained attention executes it). Stdlib-only, device-agnostic.
   - `training.py` — dataset + model variants; trial-grouped evaluation (`load_trials`, `trial_grouped_split`, `trial_windows`, `significance_threshold`, `feature_stats`).
-  - `control.py` — **the one brain-control state machine** for every device: `BrainControlSession` (modes 升降 → 前后 → 转弯 filtered by device capabilities, double blink = next mode, single blink = flip direction in 转弯 / device `aux` elsewhere, attention-vs-meditation rule with dead-band + margin, FocusSteer or gated model for 转弯, optional vote window, disconnect → `emergency_stop`), `ControlConfig`, `StepReport`, the `Device` protocol and `DeviceBase`.
+  - `control.py` — **the one brain-control state machine** for every device: `BrainControlSession` (modes 升降 → 前后 → 转弯 filtered by device capabilities, double blink = next mode, single blink = flip direction in 转弯 / device `aux` elsewhere, attention-vs-meditation rule with dead-band + margin, FocusSteer or gated model for 转弯, optional vote window, disconnect → `emergency_stop`), `ControlConfig`, `StepReport`, the `Device` protocol and `DeviceBase` (adapters may also expose `status()` telemetry and operator-only `extra_actions`, run through `execute_manual`, never by the brain).
   - `cli.py` — `BrainSettings` base config + shared flags (`add_brain_arguments` / `settings_from_args`), `build_reader` / `build_session` / `run_brain_signal_test` used by every `brain_control.py`.
   - `hub.py` — `ControlHub`: owns device + headset + brain thread for the web panel; manual commands only while paused, emergency always; publishes `state/sample/report/action/log` events.
   - `evaluation.py` — cued online test: `build_cue_schedule`, `run_cue_trial` (injected step/poll/clock), `summarize` (accuracy, latency, confusion, significance, Wolpaw ITR), `format_summary_markdown`.
   - `keyboard.py` — `KeyboardReader` (swappable backend). `transport.py` — `JsonHttpClient`.
 - **One shared model**: `TrainUser/train_user.py` trains once and writes `src/models/FinalModel.pth`; all three `brain_control.py` scripts default to that path (override with `--model-path`).
-- **Device apps** (`MI-CarControl/`, `MI-DroneControl/`, `MI-DOFBOT/`) each pair a `keyboard_control.py` with a `brain_control.py`. Each `brain_control.py` inserts `ROOT_DIR` into `sys.path` so it can `from bin… import …`. Raw hardware sits behind `drone_hardware.py` / `arm_hardware.py` (with `SimulatedDroneController` / `SimulatedArmController`); a **device adapter** (`car_device.py` / `drone_device.py` / `arm_device.py`, subclasses of `bin.control.DeviceBase`) maps intents to hardware and owns the safety action (car 停止, drone land + height bookkeeping, arm home + gripper `aux`). All three `brain_control.py` have one shape: a `@dataclass *Config(BrainSettings)` with only hardware fields/defaults, `build_device(config)`, `build_controller(config, reader=, device=, predictor=) -> BrainControlSession`, and `build_arg_parser` / `config_from_args` / `main`. There is no per-device control logic.
+- **Device apps** (`MI-CarControl/`, `MI-DroneControl/`, `MI-DOFBOT/`) each pair a `keyboard_control.py` with a `brain_control.py`. Each `brain_control.py` inserts `ROOT_DIR` into `sys.path` so it can `from bin… import …`. Raw hardware sits behind `drone_hardware.py` / `arm_hardware.py` (with `SimulatedDroneController` / `SimulatedArmController`); a **device adapter** (`car_device.py` / `drone_device.py` / `arm_device.py`, subclasses of `bin.control.DeviceBase`) maps intents to hardware and owns the safety action (car 停止, drone land + height bookkeeping, arm home + gripper `aux`). Arm numbers measured on the real DOFBOT (gripper angles, soft joint limits, named poses incl. the `ready` start pose, jog directions) come from the optional `MI-DOFBOT/arm_calibration.json` via `arm_hardware.load_calibration`. All three `brain_control.py` have one shape: a `@dataclass *Config(BrainSettings)` with only hardware fields/defaults, `build_device(config)`, `build_controller(config, reader=, device=, predictor=) -> BrainControlSession`, and `build_arg_parser` / `config_from_args` / `main`. There is no per-device control logic.
 - **Control panel** (`control_panel/`): `app.py` is a thin Flask layer over `bin.hub.ControlHub` (127.0.0.1 only, simulated by default, real hardware only with `--real` + confirm); `devices.py` is the Flask-free device registry also used by `experiments/online_cue_test/cue_test.py`; `static/index.html` is a single offline page (SSE for live data).
 - **Control logic is one mode state machine** (`bin/control.py`): modes cycle 升降 → 前后 → 转弯 (car: 前后 → 转弯); attention/meditation drive 升降/前后; 转弯 defaults to `turning_source="rule"` (`FocusSteer`: single blink flips left/right, focus executes) and the shared model is opt-in via `--turning-source model` (single-channel MI left/right is near chance — see `experiments/public_datasets/README.md`). See `tests/test_modular_bin.py` for the authoritative expected action sequences per device.
 
@@ -54,7 +54,7 @@ TrainUser/             Common training -> src/models/FinalModel.pth
 src/                   Training artifacts: data/, models/, picture/
 MI-CarControl/         Car: keyboard_control.py, brain_control.py, test_brain.py
 MI-DroneControl/       Tello: keyboard/brain control, predict.py, diagnose.py, drone_hardware.py
-MI-DOFBOT/             DOFBOT arm: keyboard/brain control, arm_hardware.py, Arm_Lib
+MI-DOFBOT/             DOFBOT arm: keyboard/brain control, arm_hardware.py, arm_calibration.json (optional), Arm_Lib
 Spaceinvaders/         Legacy EEG test game (Python 2.7 + 3.11)
 tests/                 unittest suites: bin/ core + device sessions + hub (test_modular_bin.py), Flask panel (test_control_panel.py)
 control_panel/         Local web panel: app.py (Flask), devices.py (registry), static/index.html
@@ -85,6 +85,7 @@ experiments/           public_datasets/ offline benchmarks (data not committed);
 | Adding a signal source or device | Put shared logic in `bin/`, keep only wiring in the device folder |
 | Running any `brain_control.py` / `keyboard_control.py` against real hardware | Pass `--dry-run` (and `--test-brain` where available) first |
 | Changing headset port | Edit `bci_interface.py`, nothing else |
+| Changing arm gripper angles / limits / poses / jog directions | Edit `MI-DOFBOT/arm_calibration.json`, not code |
 | Adding a dependency | Ask first — deps are installed by hand, not locked |
 
 ## Testing & verification

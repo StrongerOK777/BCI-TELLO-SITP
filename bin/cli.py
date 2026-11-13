@@ -140,11 +140,13 @@ def run_brain_signal_test(settings: BrainSettings, *, reader: Any = None) -> int
                 valid_count += 1
                 attention = sorted(s.attention for s in result.samples)
                 focused = sum(1 for value in attention if value >= settings.focus_threshold)
+                blink_peak = max((s.blinkStrength for s in result.samples), default=0)
                 print(
                     f"[{count}] ✓ 有效窗口 | Attention: {result.attention_count}, "
                     f"Meditation: {result.meditation_count}, Blinks: {result.blink_count}\n"
                     f"      专注采样 ≥ {settings.focus_threshold}: {focused}/{len(attention)}，"
-                    f"attention 中位数: {attention[len(attention) // 2] if attention else 0}"
+                    f"attention 中位数: {attention[len(attention) // 2] if attention else 0}，"
+                    f"眨眼强度峰值: {blink_peak}（阈值 {settings.blink_threshold}）"
                 )
             else:
                 print(f"[{count}] ✗ 无效窗口 | 原因: {result.reason}")

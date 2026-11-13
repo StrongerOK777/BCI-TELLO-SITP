@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -63,6 +64,7 @@ drone_hardware = load_module("drone_hardware_test", "MI-DroneControl/drone_hardw
 # ``from arm_hardware import ...`` reuses this exact module object.
 arm_hardware = load_module("arm_hardware", "MI-DOFBOT/arm_hardware.py")
 arm_brain = load_module("arm_brain_control", "MI-DOFBOT/brain_control.py")
+arm_keyboard = load_module("arm_keyboard_control", "MI-DOFBOT/keyboard_control.py")
 
 
 def focus_window(mode_name, attention, *, blink_count=0, samples=30):
@@ -428,6 +430,18 @@ def run_steps(session, count):
     return [session.step() for _ in range(count)]
 
 
+def calibrated_arm(**data):
+    return arm_hardware.SimulatedArmController(calibration=arm_hardware.calibration_from_dict(data))
+
+
+class FakeTello:
+    def __init__(self):
+        self.rc_calls = []
+
+    def send_rc_control(self, *values):
+        self.rc_calls.append(values)
+
+
 class UnifiedSessionTests(unittest.TestCase):
     def test_modes_follow_device_capabilities_in_fixed_order(self):
         car, _ = car_session([])
@@ -485,6 +499,12 @@ class UnifiedSessionTests(unittest.TestCase):
         self.assertEqual([r.event for r in reports], ["decision", "mode_switch"])
         self.assertEqual(reports[0].intent, "forward")
         self.assertIn("前后 → 转弯", reports[1].message)
+
+    def test_default_headset_driver_dir_contains_neuropy(self):
+        configs = [car_brain.CarBrainConfig(), drone_brain.MIDroneConfig(), arm_brain.ArmBrainConfig()]
+
+        for config in configs:
+            self.assertTrue(Path(config.neuropy_dir, "neuropy.py").exists(), config.neuropy_dir)
 
     def test_simulated_reader_feeds_sample_listener(self):
         samples = []
@@ -625,6 +645,22 @@ class DroneControlTests(unittest.TestCase):
 
         self.assertEqual(drone.actions, ["connect", "takeoff", "land", "close"])
 
+    def test_tello_rc_move_is_a_bounded_step_that_ends_hovering(self):
+        controller = drone_hardware.TelloDroneController(action_sleep=0)
+        controller.drone = FakeTello()
+
+        controller.up()
+        controller.left()
+
+        self.assertEqual(controller.drone.rc_calls, [(0, 0, 10, 0), (0, 0, 0, 0), (0, 0, 0, -30), (0, 0, 0, 0)])
+
+    def test_drone_status_reports_height(self):
+        session, _ = drone_session([rule("升降", 30, 0)])
+
+        session.step()
+
+        self.assertEqual(session.device.status(), {"airborne": True, "height_cm": 100, "max_height_cm": 150})
+
 
 class ArmBrainControlTests(unittest.TestCase):
     def test_arm_cycles_modes_gripper_and_steering(self):
@@ -696,6 +732,90 @@ class ArmBrainControlTests(unittest.TestCase):
         self.assertEqual(arm.actions[:2], ["connect", "home"])
         self.assertEqual(arm.actions[-2:], ["home", "close"])
 
+    def test_arm_calibration_sets_ready_pose_soft_limits_and_gripper_angles(self):
+        arm = calibrated_arm(
+            gripper={"open": 60, "close": 135}, limits={"3": [80, 95]}, poses={"ready": [90, 80, 90, 50, 135]}
+        )
+        session = arm_brain.build_controller(
+            arm_brain.ArmBrainConfig(vote_window=1, vote_min=1),
+            reader=FakeReader([rule("升降", 30, 0), rule("升降", 30, 0), rule("升降", blinks=1), rule("升降", blinks=1)]),
+            arm=arm,
+        )
+
+        session.device.connect()
+        moved, at_limit, opened, closed = run_steps(session, 4)
+
+        self.assertEqual(arm.actions, ["connect", "pose:ready", "arm_up", "grip_open", "grip_close"])
+        self.assertTrue(moved.executed)
+        self.assertFalse(at_limit.executed)
+        self.assertIn("已到限位", at_limit.message)
+        self.assertEqual((opened.message, closed.message), ("单眨眼：夹爪张开", "单眨眼：夹爪闭合"))
+        self.assertEqual(arm.current_angles, {1: 90, 2: 80, 3: 95, 4: 50, 5: 135, 6: 135})
+
+    def test_arm_emergency_homes_from_ready_pose_and_extras_are_manual_only(self):
+        arm = calibrated_arm(poses={"ready": [90, 80, 60, 50, 135]})
+        session = arm_brain.build_controller(arm_brain.ArmBrainConfig(), reader=FakeReader([]), arm=arm)
+        session.device.connect()
+
+        session.emergency_stop()
+        wrist = session.execute_manual("joint4_increase")
+        ready = session.execute_manual("pose:ready")
+        unknown = session.execute_manual("pose:missing")
+
+        self.assertEqual(arm.actions, ["connect", "pose:ready", "home", "joint4_increase", "pose:ready"])
+        self.assertTrue(wrist.executed and ready.executed)
+        self.assertFalse(unknown.executed)
+        self.assertEqual(ready.message, "预备姿态")
+        self.assertNotIn("pose:ready", arm_session([])[0].device.extra_actions)  # uncalibrated arm: no ready button
+
+    def test_arm_calibration_step_override_flips_a_jog_direction(self):
+        arm = calibrated_arm(steps={"arm_forward": [2, -1], "arm_backward": [2, 1]})
+
+        arm.execute_action("arm_forward")
+
+        self.assertEqual(arm.current_angles[2], 85)
+
+    def test_arm_calibration_rejects_out_of_range_values(self):
+        bad_files = [
+            {"limits": {"2": [120, 60]}},
+            {"limits": {"7": [0, 90]}},
+            {"limits": {"3": [80, 95]}, "poses": {"ready": [90, 90, 120, 90, 135]}},
+            {"poses": {"ready": [90, 90]}},
+            {"steps": {"fly": [1, 1]}},
+            {"steps": {"arm_up": [3, 2]}},
+        ]
+
+        for data in bad_files:
+            with self.assertRaises(ValueError, msg=str(data)):
+                arm_hardware.calibration_from_dict(data)
+
+    def test_load_calibration_reads_file_and_defaults_when_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "arm.json"
+            path.write_text(json.dumps({"gripper": {"open": 50, "close": 140}, "poses": {"ready": [90, 80, 50, 50, 135, 50]}}))
+            loaded = arm_hardware.load_calibration(str(path))
+            with self.assertRaises(FileNotFoundError):
+                arm_hardware.load_calibration(str(Path(tmp) / "missing.json"))
+
+        self.assertEqual((loaded.gripper_open_angle, loaded.gripper_close_angle), (50, 140))
+        self.assertEqual(loaded.poses["ready"], [90, 80, 50, 50, 135, 50])
+        self.assertEqual(arm_hardware.load_calibration(None).limits, arm_hardware.SERVO_RANGES)
+
+    def test_arm_keyboard_jogs_gripper_and_taps_toggle_it(self):
+        arm = arm_hardware.SimulatedArmController()
+        runner = arm_keyboard.KeyboardArmRunner(arm)
+
+        runner.keys_pressed = {"space", "q"}
+        runner.update_controls()
+        runner.keys_pressed = {"g"}
+        runner.handle_taps()
+        runner.keys_pressed = {"g", "p"}  # no ready pose calibrated: P only prints a hint
+        runner.handle_taps()
+
+        self.assertEqual(sorted(arm.actions[:2]), ["grip_increase", "joint4_decrease"])
+        self.assertEqual(arm.actions[2:], ["grip_open", "grip_close"])
+        self.assertEqual((arm.current_angles[4], arm.current_angles[6]), (85, 60))
+
 
 def hub_with_devices(**kwargs):
     def car_factory(real):
@@ -704,7 +824,7 @@ def hub_with_devices(**kwargs):
 
     def arm_factory(real):
         settings = arm_brain.ArmBrainConfig(simulated=not real, window_size=3, vote_window=1, vote_min=1,
-                                            min_decision_count=2)
+                                            min_decision_count=2, calibration_path=None)
         return settings, arm_brain.build_device(settings)
 
     options = [DeviceOption("car", "小车", car_factory), DeviceOption("arm", "机械臂", arm_factory)]
@@ -775,6 +895,24 @@ class ControlHubTests(unittest.TestCase):
             self.assertEqual(hub.session.config.focus_threshold, 70)
             with self.assertRaises(KeyError):
                 hub.update_config(window_size=5)
+        finally:
+            hub.shutdown()
+
+    def test_state_carries_device_status_and_extra_manual_actions(self):
+        hub = hub_with_devices()
+        try:
+            hub.connect("arm")
+            state = hub.state()
+            self.assertEqual(state["device_status"]["angles"]["4"], 90)
+            self.assertIn({"key": "home", "label": "复位"}, state["extra_actions"])
+
+            self.assertTrue(hub.command("joint4_increase")["executed"])
+            self.assertEqual(hub.state()["device_status"]["angles"]["4"], 95)
+
+            hub.connect("car")
+            hub.command("forward")
+            self.assertEqual(hub.state()["device_status"], {"last_signal": "前进"})
+            self.assertEqual(hub.state()["extra_actions"], [])
         finally:
             hub.shutdown()
 

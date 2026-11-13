@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -56,9 +56,15 @@ class CarDevice(DeviceBase):
     def __init__(self, sender: Any) -> None:
         super().__init__()
         self.sender = sender
+        self.last_signal = ""
+
+    def status(self) -> Dict[str, Any]:
+        return {"last_signal": self.last_signal}
 
     def _send(self, signal: str) -> str:
-        return f"{signal} -> {self.sender.send_signal(signal)}"
+        reply = self.sender.send_signal(signal)
+        self.last_signal = signal
+        return f"{signal} -> {reply}"
 
     def _perform(self, intent: str) -> str:
         return self._send(CAR_SIGNALS[intent])

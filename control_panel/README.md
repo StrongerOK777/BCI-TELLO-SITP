@@ -33,7 +33,8 @@ python control_panel/app.py
 | 设备 | 选择小车 / Tello 无人机 / DOFBOT 机械臂，选择模拟或真实硬件、模拟或真实脑环，连接 / 断开 |
 | 脑控 | 启动 / 暂停脑控；当前模式（升降、前后、转弯）、转弯方向、信号质量；最近一个窗口的解码结果和原因 |
 | 实时脑电 | 最近 30 秒的 attention / meditation 曲线、专注阈值线、眨眼指示 |
-| 手动控制 | 只显示当前设备支持的按钮。键盘：W/S 前后，A/D 左右，↑/↓ 升降，空格 静止，G 夹爪。脑控运行时手动按钮不可用 |
+| 设备状态 | 机械臂：六个舵机的下发角度、限位和姿态示意图、夹爪状态；无人机：是否起飞和记录的高度；小车：最近一条指令 |
+| 手动控制 | 只显示当前设备支持的按钮。键盘：W/S 前后，A/D 左右，↑/↓ 升降，空格 静止，G 夹爪。机械臂另有一排操作员按钮：复位、预备姿态、腕部 ±、夹爪旋转 ±、夹爪角度 ±（用于摆位和校准，脑控不会触发）。脑控运行时手动按钮不可用 |
 | 参数 | 专注阈值、决策计数、差值、多窗投票、转弯信号来源（规则 / 模型），修改立即生效 |
 | 模拟脑环 | attention / meditation / poorSignal 滑块，单眨眼 / 双眨眼按钮。双眨眼会落在下一个窗口内 |
 | 急停 | 右上角红色按钮或 **Esc**：立即停止脑控并执行安全动作（小车停止、无人机降落、机械臂复位） |
@@ -79,11 +80,11 @@ HTTP 接口（页面就是用它们实现的，也可以用脚本调用）：
 
 | 接口 | 作用 |
 |---|---|
-| `GET /api/state` | 当前状态（设备、模式、方向、参数、最近一次解码） |
+| `GET /api/state` | 当前状态（设备、模式、方向、参数、最近一次解码、`device_status` 设备状态、`extra_actions` 设备专有的手动动作） |
 | `POST /api/connect` | `{"device": "car" \| "drone" \| "arm", "real_hardware": false, "real_headset": false, "confirm": false}` |
 | `POST /api/disconnect` | 断开设备（无人机会先降落，机械臂会复位） |
 | `POST /api/brain/start` / `stop` | 启动 / 暂停脑控 |
-| `POST /api/command` | 手动指令 `{"intent": "forward" \| "backward" \| "left" \| "right" \| "up" \| "down" \| "rest" \| "aux"}` |
+| `POST /api/command` | 手动指令 `{"intent": "forward" \| "backward" \| "left" \| "right" \| "up" \| "down" \| "rest" \| "aux"}`，也接受 `extra_actions` 里的 key（如机械臂的 `home`、`pose:ready`） |
 | `POST /api/emergency` | 急停 |
 | `POST /api/config` | 修改参数，例如 `{"focus_threshold": 60}` |
 | `POST /api/sim-headset` | 模拟脑环，例如 `{"attention": 80, "meditation": 20, "blinks": 2}` |
@@ -92,5 +93,5 @@ HTTP 接口（页面就是用它们实现的，也可以用脚本调用）：
 ## 真机使用建议
 
 1. 先用模拟设备加**真实脑环**连接，确认曲线正常、眨眼能被识别，并调好专注阈值。
-2. 再用 `python control_panel/app.py --real` 启动，逐个设备切到真实硬件。第一次只用手动按钮和急停。
+2. 再用 `python control_panel/app.py --real` 启动，逐个设备切到真实硬件。第一次只用手动按钮和急停。机械臂按 [MI-DOFBOT/readme.md](../MI-DOFBOT/readme.md) 的“真机检查清单”校准夹爪角度、方向、预备姿态和限位。
 3. 确认急停有效后再启动脑控。无人机请在开阔场地测试，机械臂周围不要放东西。

@@ -12,6 +12,9 @@ A device only declares which intents it supports and how to perform them
   margin; 转弯 uses :class:`bin.decoding.FocusSteer` or, opt-in, the shared
   model behind a softmax confidence gate;
 * an optional :class:`bin.decoding.VoteWindow` debounces every decision;
+* a device may also offer ``extra_actions`` (operator-only buttons such as the
+  arm's 复位 / 预备姿态) and a ``status()`` snapshot for the UI; the brain never
+  triggers the extras;
 * a disconnected headset triggers the device's ``emergency_stop`` and resets
   the mode; any decoding failure falls back to ``rest``.
 
@@ -64,6 +67,7 @@ class Device(Protocol):
     name: str
     capabilities: frozenset  # subset of MOVE_INTENTS, plus AUX if supported
     actions: List[str]  # executed intents, in order (for tests / UI)
+    extra_actions: Dict[str, str]  # operator-only manual actions: key -> Chinese label
 
     def connect(self) -> None: ...
 
@@ -77,13 +81,17 @@ class Device(Protocol):
 
     def aux(self) -> ActionResult: ...
 
+    def run_extra(self, key: str) -> ActionResult: ...
+
+    def status(self) -> Dict[str, Any]: ...  # JSON-friendly telemetry for the UI
+
 
 class DeviceBase:
     """Shared plumbing for adapters: capability check + executed-intent log.
 
     Subclasses set ``name`` / ``capabilities`` and implement ``_perform``
-    (and optionally ``_rest`` / ``_emergency`` / ``_aux``), each returning a
-    short Chinese message.
+    (and optionally ``_rest`` / ``_emergency`` / ``_aux`` / ``_extra``), each
+    returning a short Chinese message.
     """
 
     name = "device"
@@ -91,6 +99,7 @@ class DeviceBase:
 
     def __init__(self) -> None:
         self.actions: List[str] = []
+        self.extra_actions: Dict[str, str] = {}
 
     def connect(self) -> None:
         pass
@@ -123,6 +132,16 @@ class DeviceBase:
         self.actions.append(AUX)
         return ActionResult(AUX, True, message)
 
+    def run_extra(self, key: str) -> ActionResult:
+        if key not in self.extra_actions:
+            return ActionResult(key, False, f"不支持 {key}")
+        message = self._extra(key)
+        self.actions.append(key)
+        return ActionResult(key, True, message)
+
+    def status(self) -> Dict[str, Any]:
+        return {}
+
     # hooks -------------------------------------------------------------------
     def _refuse(self, intent: str) -> str:
         return ""
@@ -138,6 +157,9 @@ class DeviceBase:
 
     def _aux(self) -> str:
         return ""
+
+    def _extra(self, key: str) -> str:
+        raise NotImplementedError
 
 
 @dataclass
@@ -295,6 +317,8 @@ class BrainControlSession:
             if AUX not in self.device.capabilities:
                 return ActionResult(AUX, False, f"{self.device.name} 没有附加动作")
             return self._call(self.device.aux)
+        if intent in self.device.extra_actions:
+            return self._call(self.device.run_extra, intent)
         if intent not in self.device.capabilities:
             return ActionResult(intent, False, f"{self.device.name} 不支持 {INTENT_NAMES.get(intent, intent)}")
         return self._call(self.device.execute, intent)

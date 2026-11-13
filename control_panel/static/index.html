@@ -92,6 +92,24 @@
   .pad button { min-height: 48px; }
   .pad .wide { grid-column: span 3; }
   .kbd { font-size: 11px; color: var(--text-3); display: block; }
+  .extras { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--grid); }
+  .extras button { padding: 6px 12px; }
+  .arm-status { display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr); gap: 16px; align-items: center; }
+  .arm-status svg { width: 100%; height: auto; display: block; }
+  .arm-status .ground, .arm-status .dial { stroke: var(--border); fill: none; stroke-width: 1.5; }
+  .arm-status .link { stroke: var(--accent); stroke-width: 7; stroke-linecap: round; fill: none; }
+  .arm-status .base { fill: var(--text-3); }
+  .arm-status .joint { fill: var(--surface); stroke: var(--accent); stroke-width: 2; }
+  .arm-status .tip { fill: var(--good); }
+  .arm-status .tip.closed { fill: var(--warn); }
+  .arm-status .heading { stroke: var(--accent); stroke-width: 3; stroke-linecap: round; }
+  .arm-status text { font-size: 14px; fill: var(--text-3); }
+  .joint-row { display: grid; grid-template-columns: 84px minmax(0, 1fr) 40px; gap: 8px; align-items: center; margin: 5px 0; color: var(--text-2); font-size: 13px; }
+  .joint-row output { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+  .track { position: relative; height: 6px; border-radius: 3px; background: var(--grid); }
+  .track .allowed { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--accent-soft); }
+  .track .knob { position: absolute; top: -3px; width: 4px; height: 12px; margin-left: -2px; border-radius: 2px; background: var(--accent); }
+  .track .knob.limit { background: var(--warn); }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   .param { display: grid; grid-template-columns: 1fr 52px; gap: 8px; align-items: center; margin: 6px 0; color: var(--text-2); }
   .param output { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
@@ -107,7 +125,8 @@
     main { display: flex; flex-direction: column; padding: 16px; }
     .col { display: contents; }
     #card-device { order: 1; } #card-brain { order: 2; } #card-eeg { order: 3; } #card-manual { order: 4; }
-    #sim-card { order: 5; } #card-params { order: 6; } #card-log { order: 7; }
+    #sim-card { order: 5; } #card-params { order: 6; } #card-log { order: 7; } #card-status { order: 3; }
+    .arm-status { grid-template-columns: 1fr; }
     header { gap: 8px; }
     .status-grid { grid-template-columns: repeat(2, 1fr); }
     header h1 { font-size: 15px; }
@@ -194,6 +213,11 @@
       <div class="chart-wrap"><canvas id="chart"></canvas></div>
     </section>
 
+    <section id="card-status" hidden>
+      <h2>设备状态 <span class="hint" id="status-note" style="font-weight:400"></span></h2>
+      <div id="status-body"></div>
+    </section>
+
     <section id="card-manual">
       <h2>手动控制 <span class="hint" style="font-weight:400">脑控暂停时可用</span></h2>
       <div class="pad" id="pad">
@@ -207,6 +231,7 @@
         <button data-intent="backward">后退<span class="kbd">S</span></button>
         <span></span>
       </div>
+      <div class="extras" id="extras" hidden></div>
     </section>
 
     <section id="card-log">
@@ -307,6 +332,8 @@
       b.hidden = s.connected && !supported;
       b.disabled = !s.connected || s.running;
     }
+    renderExtras(s);
+    renderStatus(s);
 
     const c = s.config || {};
     if (c.focus_threshold !== undefined) {
@@ -326,6 +353,122 @@
       setParam("s-poor", "o-poor", s.headset.poor_signal);
     }
     if (s.last_report) showDecision(s.last_report);
+  }
+
+  // ---- device-specific manual actions (e.g. arm 复位 / 预备姿态 / 腕部) ----------
+  let extrasKey = "";
+  function renderExtras(s) {
+    const box = $("extras");
+    const extras = s.connected ? (s.extra_actions || []) : [];
+    const key = JSON.stringify(extras);
+    if (key !== extrasKey) {
+      extrasKey = key;
+      box.innerHTML = "";
+      for (const item of extras) {
+        const b = document.createElement("button");
+        b.textContent = item.label;
+        b.onclick = () => command(item.key);
+        box.appendChild(b);
+      }
+    }
+    box.hidden = extras.length === 0;
+    for (const b of box.querySelectorAll("button")) b.disabled = s.running;
+  }
+
+  // ---- device status ---------------------------------------------------------
+  const SVG = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, text) {
+    const svg = ["svg", "line", "circle", "polyline", "rect", "text"].includes(tag);
+    const node = svg ? document.createElementNS(SVG, tag) : document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function statRow(label, value) {
+    const row = el("div", { class: "stat" });
+    row.append(el("div", { class: "k" }, label), el("div", { class: "v" }, value));
+    return row;
+  }
+  const JOINT_NAMES = { 1: "S1 底座", 2: "S2 大臂", 3: "S3 小臂", 4: "S4 腕部", 5: "S5 旋转", 6: "S6 夹爪" };
+
+  function armFigure(st) {
+    // Schematic only: 90° on S2-S4 is drawn as a straight, upright arm (the DOFBOT servo convention).
+    const a = st.angles, rad = (deg) => (deg * Math.PI) / 180;
+    const svg = el("svg", { viewBox: "0 0 360 200", role: "img", "aria-label": "机械臂姿态示意图" });
+    const sx = 110, sy = 165, lengths = [38, 38, 46];
+    let angle = a[2], x = sx, y = sy;
+    const pts = [[x, y]];
+    for (const [i, servo] of [2, 3, 4].entries()) {
+      if (i) angle += a[servo] - 90;
+      x += lengths[i] * Math.cos(rad(angle)); y -= lengths[i] * Math.sin(rad(angle));
+      pts.push([x, y]);
+    }
+    svg.append(
+      el("line", { class: "ground", x1: 10, y1: 190, x2: 210, y2: 190 }),
+      el("rect", { class: "base", x: sx - 16, y: sy, width: 32, height: 25, rx: 4 }),
+      el("polyline", { class: "link", points: pts.map((p) => p.map((v) => v.toFixed(1)).join(",")).join(" ") }),
+    );
+    for (const [px, py] of pts.slice(0, 3)) svg.append(el("circle", { class: "joint", cx: px.toFixed(1), cy: py.toFixed(1), r: 5 }));
+    svg.append(el("circle", { class: "tip" + (st.gripper_open ? "" : " closed"), cx: x.toFixed(1), cy: y.toFixed(1), r: 6 }));
+    svg.append(el("text", { x: 10, y: 16 }, "侧视 S2–S4"));
+    // top view: base heading (S1) and how far the gripper reaches out
+    const cx = 290, cy = 110, r = 52, reach = Math.min(1, Math.abs(x - sx) / 122);
+    const hx = Math.cos(rad(a[1])), hy = -Math.sin(rad(a[1]));
+    svg.append(
+      el("circle", { class: "dial", cx, cy, r }),
+      el("line", { class: "ground", x1: cx, y1: cy, x2: (cx + r * hx).toFixed(1), y2: (cy + r * hy).toFixed(1) }),
+      el("line", { class: "heading", x1: cx, y1: cy, x2: (cx + r * reach * hx).toFixed(1), y2: (cy + r * reach * hy).toFixed(1) }),
+      el("circle", { class: "base", cx, cy, r: 5 }),
+      el("text", { x: 240, y: 16 }, "俯视 S1"),
+    );
+    return svg;
+  }
+
+  function armStatus(st) {
+    const wrap = el("div", { class: "arm-status" });
+    const rows = el("div");
+    for (const id of [1, 2, 3, 4, 5, 6]) {
+      const max = id === 5 ? 270 : 180, angle = st.angles[id], [low, high] = st.limits[id];
+      const row = el("div", { class: "joint-row" });
+      const track = el("div", { class: "track" });
+      const allowed = el("div", { class: "allowed" });
+      allowed.style.left = `${(low / max) * 100}%`; allowed.style.width = `${((high - low) / max) * 100}%`;
+      const knob = el("div", { class: "knob" + (angle <= low || angle >= high ? " limit" : "") });
+      knob.style.left = `${(angle / max) * 100}%`;
+      track.append(allowed, knob);
+      row.append(el("span", {}, JOINT_NAMES[id]), track, el("output", {}, `${angle}°`));
+      rows.appendChild(row);
+    }
+    const g = st.gripper_angles;
+    rows.appendChild(el("p", { class: "hint" }, `夹爪：${st.gripper_open ? "张开" : "闭合"}（张开 ${g.open}° / 闭合 ${g.close}°）`));
+    wrap.append(armFigure(st), rows);
+    return wrap;
+  }
+
+  function renderStatus(s) {
+    const st = s.device_status || {};
+    const show = s.connected && Object.keys(st).length > 0;
+    $("card-status").hidden = !show;
+    if (!show) return;
+    const body = $("status-body");
+    body.innerHTML = "";
+    $("status-note").textContent = "";
+    if (st.angles) {
+      $("status-note").textContent = "下发的舵机角度（不是回读值）；浅色段为限位";
+      body.appendChild(armStatus(st));
+    } else {
+      const grid = el("div", { class: "status-grid" });
+      grid.style.marginTop = "0";
+      if ("height_cm" in st) {
+        grid.append(statRow("状态", st.airborne ? "飞行中" : "地面"), statRow("高度（记录值）", `${st.height_cm} cm`),
+          statRow("最大高度", `${st.max_height_cm} cm`));
+      } else if ("last_signal" in st) {
+        grid.append(statRow("最近指令", st.last_signal || "—"));
+      } else {
+        grid.append(statRow("状态", st.error || JSON.stringify(st)));
+      }
+      body.appendChild(grid);
+    }
   }
 
   function setParam(inputId, outId, value) {

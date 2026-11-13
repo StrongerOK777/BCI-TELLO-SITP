@@ -28,11 +28,12 @@ from bin.cli import BrainSettings, add_brain_arguments, build_session, run_brain
 from bin.control import BrainControlSession
 from bci_interface import get_mindwave_interface
 from arm_device import ArmDeviceAdapter
-from arm_hardware import ArmController, SimulatedArmController
+from arm_hardware import DEFAULT_CALIBRATION_PATH, ArmController, SimulatedArmController, load_calibration
 
 
 DEFAULT_MODEL_PATH = ROOT_DIR / "src" / "models" / "FinalModel.pth"
-DEFAULT_INTERFACE = get_mindwave_interface(neuropy_dir=DEVICE_DIR)
+# This folder ships no neuropy.py copy: use the shared driver from bci_interface.
+DEFAULT_INTERFACE = get_mindwave_interface()
 
 
 @dataclass
@@ -52,19 +53,26 @@ class ArmBrainConfig(BrainSettings):
     arm_lib_dir: Optional[str] = None
     angle_step: int = 5
     move_time_ms: int = 200
+    # 真机测得的夹爪角度 / 限位 / 预备姿态；默认文件不存在时使用未校准的默认值
+    calibration_path: Optional[str] = str(DEFAULT_CALIBRATION_PATH)
+    gripper_open_angle: Optional[int] = None
+    gripper_close_angle: Optional[int] = None
 
 
 def build_device(config: ArmBrainConfig, *, arm: Any = None) -> ArmDeviceAdapter:
     if arm is None:
+        shared = dict(
+            angle_step=config.angle_step,
+            move_time_ms=config.move_time_ms,
+            calibration=load_calibration(config.calibration_path),
+            gripper_open_angle=config.gripper_open_angle,
+            gripper_close_angle=config.gripper_close_angle,
+        )
         if config.simulated:
-            arm = SimulatedArmController(angle_step=config.angle_step)
+            arm = SimulatedArmController(**shared)
         else:
             arm = ArmController(
-                com_port=config.arm_port,
-                arm_lib_dir=config.arm_lib_dir,
-                dry_run=config.dry_run,
-                angle_step=config.angle_step,
-                move_time_ms=config.move_time_ms,
+                com_port=config.arm_port, arm_lib_dir=config.arm_lib_dir, dry_run=config.dry_run, **shared
             )
     return ArmDeviceAdapter(arm)
 
@@ -92,6 +100,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="连接真实适配器但不下发串口指令")
     parser.add_argument("--angle-step", type=int, default=5)
     parser.add_argument("--move-time-ms", type=int, default=200)
+    parser.add_argument("--calibration", dest="calibration_path", default=str(DEFAULT_CALIBRATION_PATH),
+                        help="机械臂校准文件（夹爪角度 / 限位 / 预备姿态），默认 MI-DOFBOT/arm_calibration.json")
+    parser.add_argument("--gripper-open-angle", type=int, default=None, help="夹爪张开角度，覆盖校准文件")
+    parser.add_argument("--gripper-close-angle", type=int, default=None, help="夹爪闭合角度，覆盖校准文件")
     return parser
 
 

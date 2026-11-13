@@ -42,6 +42,7 @@ python MI-DroneControl/brain_control.py
 - 升降：在地面时专注更高为起飞，之后每次上升 `--height-step`（默认 10cm，最高 `--max-height` 150cm）；放松更高为下降，回到起飞高度（`--takeoff-height` 100cm）时降落。
 - 前后：专注更高前进，放松更高后退。两者都低于 `--min-decision-count` 或相差小于 `--decision-margin` 时悬停。
 - **未起飞时只接受起飞**，前后和转弯动作会被拒绝并提示“未起飞”。
+- 每个动作是一小步：按设定速度飞 3 秒后自动悬停，不会一直飞下去。
 - 转弯（默认 `--turning-source rule`）：单眨眼在左/右之间切换当前方向（本窗口不动作），窗口内足够多的采样 attention ≥ `--focus-threshold`（默认 55）时向当前方向转一次，专注不足则悬停。
 - 转弯（`--turning-source model`）：使用共享模型 `src/models/FinalModel.pth` 加置信度门控，可用 `--model-path` 指定其他模型。
 - 脑环断开（poorSignal=200）或程序退出时自动降落。

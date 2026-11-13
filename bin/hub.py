@@ -113,6 +113,8 @@ class ControlHub:
             "modes": [{"key": m, "name": MODE_NAMES[m]} for m in session.modes] if session else [],
             "direction": session.steer.direction if session else None,
             "capabilities": sorted(device.capabilities) if device else [],
+            "extra_actions": [{"key": k, "label": v} for k, v in device.extra_actions.items()] if device else [],
+            "device_status": self._device_status(device),
             "intent_names": INTENT_NAMES,
             "config": {name: getattr(config, name) for name in TUNABLES} if config else {},
             "headset": None if self.headset is None else {
@@ -122,6 +124,14 @@ class ControlHub:
             },
             "last_report": self.last_report,
         }
+
+    def _device_status(self, device: Any) -> Dict[str, Any]:
+        if device is None:
+            return {}
+        try:
+            return device.status()
+        except Exception as exc:  # telemetry must never break the state stream
+            return {"error": str(exc)}
 
     def _publish_state(self) -> None:
         self.publish("state", self.state())
@@ -231,7 +241,8 @@ class ControlHub:
         payload = {"source": "manual", "intent": result.intent, "executed": result.executed,
                    "message": result.message, "t": time.time()}
         self.publish("action", payload)
-        self.log(f"手动 {INTENT_NAMES.get(intent, intent)}：{result.message}",
+        label = INTENT_NAMES.get(intent) or session.device.extra_actions.get(intent, intent)
+        self.log(f"手动 {label}：{result.message}",
                  "info" if result.executed else "warn")
         self._publish_state()
         return payload

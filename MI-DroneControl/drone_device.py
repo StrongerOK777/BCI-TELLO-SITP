@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -47,6 +47,9 @@ class DroneDevice(DeviceBase):
             print(f"无人机降落失败：{exc}")
         finally:
             self.controller.close()
+
+    def status(self) -> Dict[str, Any]:
+        return {"airborne": self.airborne, "height_cm": self.height, "max_height_cm": self.max_height}
 
     def _refuse(self, intent: str) -> str:
         if intent == "up" and self.height >= self.max_height:

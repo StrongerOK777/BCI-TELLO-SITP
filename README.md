@@ -208,7 +208,7 @@ src/models/FinalModel.pth
 - **升降 / 前后**：attention 与 meditation 计数都低于 `--min-decision-count` 或相差小于 `--decision-margin` 时静止，否则专注更高 → 上升 / 前进，放松更高 → 下降 / 后退。
 - **转弯**：默认“专注执行、单眨眼换方向”（窗口内足够多的采样 attention ≥ `--focus-threshold` 时向当前方向转一次）；`--turning-source model` 改用共享模型加置信度门控。
 - **多窗投票**（`--vote-window` / `--vote-min`）默认关闭，机械臂默认 3 窗 2 票。
-- **安全**：脑环断开时执行设备的安全动作（小车停止、无人机降落、机械臂复位）并回到起始模式；信号差只报警；模型出错按静止处理；无人机未起飞时只接受起飞。
+- **安全**：脑环断开时执行设备的安全动作（小车停止、无人机降落、机械臂复位）并回到起始模式；信号差只报警；模型出错按静止处理；无人机未起飞时只接受起飞，每个动作飞 3 秒后自动悬停；机械臂到达限位时拒绝动作。
 
 本地网页控制面板（需要 `pip install flask`）：
 
@@ -216,7 +216,7 @@ src/models/FinalModel.pth
 python control_panel/app.py
 ```
 
-打开 <http://127.0.0.1:8765>，可以选择设备、实时查看脑电和解码结果、启动 / 暂停脑控、手动按键控制、一键急停（Esc）。默认使用模拟设备和模拟脑环；加 `--real` 启动后才允许在页面上（二次确认）连接真实硬件。详见 [control_panel/README.md](./control_panel/README.md)。
+打开 <http://127.0.0.1:8765>，可以选择设备、实时查看脑电和解码结果、查看设备状态（机械臂舵机角度和姿态示意、无人机高度）、启动 / 暂停脑控、手动按键控制、一键急停（Esc）。默认使用模拟设备和模拟脑环；加 `--real` 启动后才允许在页面上（二次确认）连接真实硬件。详见 [control_panel/README.md](./control_panel/README.md)。
 
 <a name="hardware-control"></a>
 
@@ -310,7 +310,8 @@ python MI-DroneControl/brain_control.py
 - [keyboard_control.py](./MI-DOFBOT/keyboard_control.py)：键盘控制 DOFBOT 机械臂。
 - [brain_control.py](./MI-DOFBOT/brain_control.py)：脑环控制 DOFBOT 机械臂的命令行入口（统一控制方式）。
 - [arm_device.py](./MI-DOFBOT/arm_device.py)：机械臂适配器，附加动作为开合夹爪，急停为复位。
-- [arm_hardware.py](./MI-DOFBOT/arm_hardware.py)：DOFBOT 硬件适配层。
+- [arm_hardware.py](./MI-DOFBOT/arm_hardware.py)：DOFBOT 硬件适配层，读取校准文件。
+- `MI-DOFBOT/arm_calibration.json`（可选）：真机测得的夹爪角度、限位、预备姿态和动作方向。
 - [Arm_Lib (Windows)/](./MI-DOFBOT/Arm_Lib%20(Windows)/)：机械臂底层串口库。
 - [readme.md](./MI-DOFBOT/readme.md)：机械臂目录说明。
 
@@ -335,6 +336,8 @@ python MI-DOFBOT/brain_control.py --arm-port COM4
 ```
 
 机械臂脑控逻辑：使用上面的统一控制方式（升降 → 前后 → 转弯），单眨眼开合夹爪（转弯模式下改为切换旋转方向），默认 3 窗 2 票的多窗投票，单个噪声窗口不会误动作。首次务必先 `--dry-run` 或 `--simulated`。
+
+抓取演示的流程、校准文件格式和首次上真机的检查清单见 [MI-DOFBOT/readme.md](./MI-DOFBOT/readme.md)。键盘控制支持夹爪（空格 / X 点动，G 开合）和预备姿态（P）。
 
 <a name="future"></a>
 
@@ -386,8 +389,9 @@ BCI-TELLO/
 ├── MI-DOFBOT/                        # DOFBOT 机械臂控制
 │   ├── keyboard_control.py           # 机械臂键盘控制
 │   ├── brain_control.py              # 机械臂脑环控制
-│   ├── arm_hardware.py               # 机械臂硬件适配
+│   ├── arm_hardware.py               # 机械臂硬件适配、校准文件读取
 │   ├── arm_device.py                 # 机械臂适配器（统一控制方式）
+│   ├── arm_calibration.json          # 可选：真机校准（夹爪角度 / 限位 / 预备姿态）
 │   ├── Arm_Lib (Windows)/            # 底层机械臂库
 │   └── readme.md
 ├── bin/                              # 可迁移基础模块
