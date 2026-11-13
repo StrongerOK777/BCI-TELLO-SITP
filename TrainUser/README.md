@@ -42,6 +42,13 @@ python TrainUser/train_user.py
 - 右手运动想象数据
 - 静息数据
 
+## 评测方式
+
+- 每一轮提示（30 组、约 3 秒）算作一个**试次**。训练 / 验证 / 测试按试次划分（`bin.training.trial_grouped_split`），同一轮的数据只出现在一个集合中，避免把“记住同一秒的读数”当成准确率。
+- 训练窗口为 30 组（`WINDOW_SIZE`），与 `brain_control.py` 在线预测的窗口一致；特征标准化使用原始训练特征的均值和标准差，与推理时的 `ModelPredictor` 相同。
+- 训练结束会打印测试试次数和**显著性阈值**（三分类随机猜测的二项检验，p<0.05）。准确率低于阈值时会提示转弯模式使用 `--turning-source rule`。这些信息也写入 `FinalModel.pth`（`split`、`window_size`、`n_test_trials`、`significance_threshold`、`significant`）。
+- 建议每类至少采集 20 轮、分 2 次采集；测试试次少于 15 个时结果波动很大。
+
 ## 输出位置
 
 ```text

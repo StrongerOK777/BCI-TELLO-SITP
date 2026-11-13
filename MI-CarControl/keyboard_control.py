@@ -6,17 +6,18 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Optional, Sequence
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+DEVICE_DIR = Path(__file__).resolve().parent
+for _path in (ROOT_DIR, DEVICE_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from bin.keyboard import KeyboardReader
-from bin.transport import JsonHttpClient
+from car_device import CarSignalClient  # noqa: F401  (re-exported for existing callers)
 
 
 KEY_TO_SIGNAL = {
@@ -26,22 +27,6 @@ KEY_TO_SIGNAL = {
     "l": "右转",
     " ": "停止",
 }
-
-
-@dataclass
-class CarSignalClient:
-    host: str = "192.168.149.1"
-    port: int = 5000
-    speed: int = 50
-    transport: Optional[JsonHttpClient] = None
-
-    def __post_init__(self) -> None:
-        if self.transport is None:
-            self.transport = JsonHttpClient(f"http://{self.host}:{self.port}")
-
-    def send_signal(self, signal: str) -> Any:
-        assert self.transport is not None
-        return self.transport.post_json("/signal", {"signal": signal, "speed": self.speed})
 
 
 def run_keyboard_control(

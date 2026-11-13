@@ -133,6 +133,35 @@ def capability_chart(r):
     fig.tight_layout(); fig.savefig(OUT / "capability.png"); plt.close(fig)
 
 
+def headset_chart(r):
+    """Left/right MI accuracy for the electrode layouts the team could actually use."""
+
+    p = r["physionet"]
+    sub = p.get("within_subject_lr_csp_subsets")
+    if not sub:
+        return
+    sig = p["within_subject_lr_sig_threshold"]
+    rows = [
+        ("MindWave\nFp1 单通道", p["within_subject_lr"]["FP1/neurosky_style"]["mean"], NEUTRAL),
+        ("Emotiv\nFC5+FC6", sub["emotiv_fc5_fc6"]["mean"], NEUTRAL),
+        ("C3+C4\n两电极", sub["c3_c4"]["mean"], HONEST),
+        ("Emotiv EPOC X\n14 导", sub["emotiv14"]["mean"], HONEST),
+        ("C3+Cz+C4\n三电极", sub["c3_cz_c4"]["mean"], RANDOM),
+        ("64 导\n(实验室上限)", sub["all64"]["mean"], RANDOM),
+    ]
+    fig, ax = plt.subplots(figsize=(8, 4.4), dpi=200)
+    bars = ax.bar(range(len(rows)), [v for _, v, _ in rows], 0.6, color=[c for _, _, c in rows])
+    _bar_labels(ax, bars)
+    _chance(ax, 0.5, "随机猜测 50%")
+    ax.axhline(sig, color=INK2, linestyle=":", linewidth=1)
+    ax.text(0.7, sig + 0.008, f"单人显著性阈值 {sig * 100:.1f}%（p<0.05）", fontsize=9, color=INK2)
+    ax.set_xticks(range(len(rows)), [n for n, _, _ in rows], fontsize=10)
+    ax.set_ylim(0.3, 0.8); ax.set_ylabel("被试内 5 折平均准确率")
+    ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+    ax.set_title("左手 vs 右手运动想象：电极布局决定上限（PhysioNet，105 人）", color=INK, fontsize=12, loc="left")
+    fig.tight_layout(); fig.savefig(OUT / "headset_options.png"); plt.close(fig)
+
+
 def main() -> int:
     results = json.loads((HERE / "results.json").read_text())
     OUT.mkdir(exist_ok=True)
@@ -140,6 +169,7 @@ def main() -> int:
     physionet_channel_chart(results)
     mendeley_chart(results)
     capability_chart(results)
+    headset_chart(results)
     print(f"图表已保存：{OUT}")
     return 0
 

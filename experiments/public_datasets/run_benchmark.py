@@ -23,7 +23,6 @@ from typing import Callable, Dict, List, Sequence, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from scipy.stats import binom
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -39,7 +38,7 @@ for path in (ROOT_DIR, HERE):
         sys.path.insert(0, str(path))
 
 from bin.models import FinalUnifiedModel, combine_feature_window  # noqa: E402
-from bin.training import stratified_split  # noqa: E402
+from bin.training import significance_threshold, stratified_split  # noqa: E402
 from datasets import DEFAULT_DATA_DIR, Trial, load_mendeley, load_physionet  # noqa: E402
 
 SEED = 42
@@ -158,9 +157,9 @@ def fit_predict(model_name, X_train, y_train, X_test):
 # ---------------------------------------------------------------------------
 
 def chance_threshold(n: int, k: int, alpha: float = 0.05) -> float:
-    """Smallest accuracy significantly above 1/k chance for n test trials (binomial)."""
+    """Smallest accuracy significantly above 1/k chance for n test trials (exact binomial tail)."""
 
-    return float(binom.ppf(1 - alpha, n, 1.0 / k) / n)
+    return significance_threshold(n, k, alpha)
 
 
 def score(y_true, y_pred) -> Dict[str, float]:
@@ -338,7 +337,10 @@ def run_physionet(data_dir: Path, subjects: Sequence[int]) -> Dict:
     out["within_subject_lr_csp64"] = csp_sanity_check(data_dir, subjects)
     print(f"  within-subject L/R 64ch CSP+LDA acc {out['within_subject_lr_csp64']['mean']:.3f}")
 
-    # 5) Leakage check on Fp1: overlapping windows, random split vs subject-grouped split
+    # 5) Which headsets could do left/right MI? Same CSP pipeline on channel subsets
+    out["within_subject_lr_csp_subsets"] = run_csp_subsets(data_dir, subjects)
+
+    # 6) Leakage check on Fp1: overlapping windows, random split vs subject-grouped split
     items = lr_rest_balanced(by_channel["FP1"])
     leak = {
         "random_window_split": random_window_split_eval(items, 3, "FinalUnifiedModel", log_bands=True),
@@ -349,18 +351,33 @@ def run_physionet(data_dir: Path, subjects: Sequence[int]) -> Dict:
     return out
 
 
-def csp_sanity_check(data_dir: Path, subjects: Sequence[int], n_filters: int = 6) -> Dict:
-    """64-channel CSP (8-30 Hz, 0.5-4 s) + LDA. If this is well above chance the
-    labels/epoching are correct, so near-chance single-channel results are real."""
+# Channel subsets for CSP: what a given headset could see of the motor cortex.
+EMOTIV_EPOC_X = ("AF3", "F7", "F3", "FC5", "T7", "P7", "O1", "O2", "P8", "T8", "FC6", "F4", "F8", "AF4")
+CSP_SUBSETS = {
+    "all64": None,
+    "emotiv14": EMOTIV_EPOC_X,
+    "emotiv_fc5_fc6": ("FC5", "FC6"),
+    "c3_c4": ("C3", "C4"),
+    "c3_cz_c4": ("C3", "CZ", "C4"),
+}
+
+
+def csp_channel_subsets(data_dir: Path, subjects: Sequence[int], subsets: Dict, n_filters: int = 6) -> Dict:
+    """CSP (8-30 Hz, 0.5-4 s) + LDA, left vs right, per subject 5-fold, for each channel subset.
+
+    ``subsets`` maps a name to a channel tuple (``None`` = all channels). Each
+    subject is loaded and filtered once and every subset is scored on the same
+    epochs and folds, so the subsets are directly comparable.
+    """
 
     from scipy.linalg import eigh
     from scipy.signal import butter, sosfiltfilt
 
     from datasets import PHYSIONET_IMAGERY_RUNS, read_edf
 
-    accs = []
+    accs: Dict[str, List[float]] = {name: [] for name in subsets}
     for s in subjects:
-        epochs, labels = [], []
+        epochs, labels, names = [], [], None
         for r in PHYSIONET_IMAGERY_RUNS:
             path = data_dir / "physionet_eegmmidb" / f"S{s:03d}R{r:02d}.edf"
             if not path.exists():
@@ -377,19 +394,45 @@ def csp_sanity_check(data_dir: Path, subjects: Sequence[int], n_filters: int = 6
                         epochs.append(data[:, begin:end]); labels.append(int(code == "T2"))
         if len(epochs) < 20:
             continue
-        X, y = np.array(epochs), np.array(labels)
-        splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
-        correct = 0
-        for train_idx, test_idx in splitter.split(X, y):
-            covs = [np.mean([e @ e.T / np.trace(e @ e.T) for e in X[train_idx][y[train_idx] == c]], axis=0) for c in (0, 1)]
-            _, vecs = eigh(covs[0], covs[0] + covs[1])
-            W = np.concatenate([vecs[:, : n_filters // 2], vecs[:, -n_filters // 2 :]], axis=1).T
-            feats = lambda E: np.log(np.var(np.einsum("fc,ncs->nfs", W, E), axis=2))  # noqa: E731
-            clf = LinearDiscriminantAnalysis().fit(feats(X[train_idx]), y[train_idx])
-            correct += int((clf.predict(feats(X[test_idx])) == y[test_idx]).sum())
-        accs.append(correct / len(y))
-    accs = np.array(accs)
-    return {"mean": float(accs.mean()), "std": float(accs.std()), "n_subjects": int(len(accs)), "per_subject": accs.tolist()}
+        X_all, y = np.array(epochs), np.array(labels)
+        folds = list(StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED).split(X_all, y))
+        for subset_name, channels in subsets.items():
+            X = X_all if channels is None else X_all[:, [names.index(c) for c in channels]]
+            k = min(n_filters, X.shape[1]) // 2 or 1
+            correct = 0
+            for train_idx, test_idx in folds:
+                covs = [np.mean([e @ e.T / np.trace(e @ e.T) for e in X[train_idx][y[train_idx] == c]], axis=0) for c in (0, 1)]
+                _, vecs = eigh(covs[0], covs[0] + covs[1])
+                W = np.concatenate([vecs[:, :k], vecs[:, -k:]], axis=1).T
+                feats = lambda E: np.log(np.var(np.einsum("fc,ncs->nfs", W, E), axis=2))  # noqa: E731
+                clf = LinearDiscriminantAnalysis().fit(feats(X[train_idx]), y[train_idx])
+                correct += int((clf.predict(feats(X[test_idx])) == y[test_idx]).sum())
+            accs[subset_name].append(correct / len(y))
+    out = {}
+    for subset_name, values in accs.items():
+        values = np.array(values)
+        out[subset_name] = {
+            "channels": list(subsets[subset_name]) if subsets[subset_name] is not None else "all",
+            "mean": float(values.mean()), "std": float(values.std()),
+            "n_subjects": int(len(values)), "per_subject": values.tolist(),
+        }
+    return out
+
+
+def csp_sanity_check(data_dir: Path, subjects: Sequence[int], n_filters: int = 6) -> Dict:
+    """64-channel CSP + LDA. If this is well above chance the labels/epoching are
+    correct, so near-chance single-channel results are real."""
+
+    result = csp_channel_subsets(data_dir, subjects, {"all64": None}, n_filters)["all64"]
+    result.pop("channels")
+    return result
+
+
+def run_csp_subsets(data_dir: Path, subjects: Sequence[int]) -> Dict:
+    result = csp_channel_subsets(data_dir, subjects, CSP_SUBSETS)
+    for name, res in result.items():
+        print(f"  within-subject L/R CSP {name:15s} acc {res['mean']:.3f} ± {res['std']:.3f}")
+    return result
 
 
 def run_own_data(window: int = 5) -> Dict:
@@ -418,11 +461,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Benchmark the NeuroSky pipeline on public datasets")
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--subjects", type=int, default=109, help="PhysioNet: first N subjects")
-    parser.add_argument("--only", choices=["mendeley", "physionet", "own"], default=None)
+    parser.add_argument("--only", choices=["mendeley", "physionet", "own", "csp"], default=None,
+                        help="csp: only re-run the channel-subset CSP check and merge it into --output")
     parser.add_argument("--output", type=Path, default=HERE / "results.json")
     args = parser.parse_args()
     np.random.seed(SEED)
     torch.set_num_threads(4)
+
+    excluded = {88, 92, 100, 104}  # known bad sampling/annotation in EEGMMIDB
+    subjects = [s for s in range(1, args.subjects + 1) if s not in excluded]
+    if args.only == "csp":
+        results = json.loads(args.output.read_text()) if args.output.exists() else {}
+        results.setdefault("physionet", {})["within_subject_lr_csp_subsets"] = run_csp_subsets(args.data_dir, subjects)
+        args.output.write_text(json.dumps(results, indent=2, ensure_ascii=False))
+        print(f"结果已合并：{args.output}")
+        return 0
 
     results: Dict = {}
     if args.only in (None, "own"):
@@ -430,8 +483,6 @@ def main() -> int:
     if args.only in (None, "mendeley"):
         results["mendeley"] = run_mendeley(args.data_dir)
     if args.only in (None, "physionet"):
-        excluded = {88, 92, 100, 104}  # known bad sampling/annotation in EEGMMIDB
-        subjects = [s for s in range(1, args.subjects + 1) if s not in excluded]
         results["physionet"] = run_physionet(args.data_dir, subjects)
     args.output.write_text(json.dumps(results, indent=2, ensure_ascii=False))
     print(f"结果已保存：{args.output}")

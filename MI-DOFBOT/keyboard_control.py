@@ -1,4 +1,11 @@
-"""Keyboard control entrypoint for the DOFBOT arm."""
+"""Keyboard control entrypoint for the DOFBOT arm.
+
+Hold a key to jog: A/D base, W/S joint 2, ↑/↓ joint 3, Q/E joint 4 (wrist),
+Space/X gripper angle. Tap G to open / close the gripper at the calibrated
+angles, P for the calibrated ready pose, R to home, Esc to quit. The current
+servo angles are printed after every move so they can be copied into
+``arm_calibration.json``.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +21,20 @@ DEVICE_DIR = Path(__file__).resolve().parent
 if str(DEVICE_DIR) not in sys.path:
     sys.path.insert(0, str(DEVICE_DIR))
 
-from arm_hardware import ArmController
+from arm_hardware import DEFAULT_CALIBRATION_PATH, READY_POSE, ArmController, load_calibration
+
+JOG_KEYS = {
+    "a": "base_left",
+    "d": "base_right",
+    "w": "arm_forward",
+    "s": "arm_backward",
+    "up": "arm_up",
+    "down": "arm_down",
+    "q": "joint4_decrease",
+    "e": "joint4_increase",
+    "space": "grip_increase",
+    "x": "grip_decrease",
+}
 
 
 class KeyboardArmRunner:
@@ -34,9 +54,7 @@ class KeyboardArmRunner:
         listener.start()
         try:
             while self.running:
-                if "r" in self.keys_pressed:
-                    self.keys_pressed.discard("r")
-                    self.controller.home()
+                self.handle_taps()
                 self.update_controls()
                 time.sleep(0.01)
         except KeyboardInterrupt:
@@ -60,25 +78,42 @@ class KeyboardArmRunner:
                 return False
         return None
 
+    def handle_taps(self) -> None:
+        """One-shot keys: R home, G toggle gripper, P ready pose."""
+
+        if "r" in self.keys_pressed:
+            self.keys_pressed.discard("r")
+            self.controller.home()
+            self.report()
+        if "g" in self.keys_pressed:
+            self.keys_pressed.discard("g")
+            self.controller.execute_action("grip_close" if self.controller.gripper_open else "grip_open")
+            self.report()
+        if "p" in self.keys_pressed:
+            self.keys_pressed.discard("p")
+            if READY_POSE in self.controller.calibration.poses:
+                self.controller.move_to_pose(READY_POSE)
+                self.report()
+            else:
+                print("校准文件里没有 ready 姿态")
+
     def update_controls(self) -> None:
-        mapping = {
-            "a": "base_left",
-            "d": "base_right",
-            "w": "arm_forward",
-            "s": "arm_backward",
-            "up": "arm_up",
-            "down": "arm_down",
-            "q": "joint4_decrease",
-            "e": "joint4_increase",
-        }
         now = time.time()
-        for key, action in mapping.items():
+        moved = False
+        for key, action in JOG_KEYS.items():
             if key not in self.keys_pressed:
                 continue
             if now - self.last_update_time.get(key, 0) <= self.update_interval:
                 continue
             self.controller.execute_action(action)
             self.last_update_time[key] = now
+            moved = True
+        if moved:
+            self.report()
+
+    def report(self) -> None:
+        angles = self.controller.current_angles
+        print("舵机角度：" + "  ".join(f"S{servo_id}={angles[servo_id]}" for servo_id in sorted(angles)))
 
     @staticmethod
     def key_name(key) -> str:
@@ -93,6 +128,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--arm-lib-dir", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--angle-step", type=int, default=5)
+    parser.add_argument("--calibration", default=str(DEFAULT_CALIBRATION_PATH),
+                        help="机械臂校准文件（夹爪角度 / 限位 / 预备姿态）")
     return parser
 
 
@@ -103,6 +140,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         arm_lib_dir=args.arm_lib_dir,
         dry_run=args.dry_run,
         angle_step=args.angle_step,
+        calibration=load_calibration(args.calibration),
     )
     KeyboardArmRunner(controller).run()
     return 0

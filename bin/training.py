@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import random
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -12,10 +14,19 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .eeg import build_feature_vector
-from .models import FinalUnifiedModel
+from .models import FinalUnifiedModel, combine_feature_window
 
 
 Sample = Tuple[np.ndarray, int]
+
+
+@dataclass
+class RecordedTrial:
+    """One contiguous recording block (one cued round of train_user.py)."""
+
+    label: int
+    rows: np.ndarray  # (n_rows, 14) feature rows from build_feature_vector
+    start_time: float
 
 
 def parse_feature_line(line: str, poor_signal_threshold: int = 20) -> Optional[List[float]]:
@@ -103,6 +114,137 @@ def stratified_split(
         val_samples.extend(items[train_count : train_count + val_count])
         test_samples.extend(items[train_count + val_count :])
     return train_samples, val_samples, test_samples
+
+
+def load_trials(
+    file_path: str | Path,
+    label: int,
+    *,
+    gap_sec: float = 1.0,
+    max_rows: int = 30,
+) -> List[RecordedTrial]:
+    """Split a recording file into trials so windows never span two rounds.
+
+    A new trial starts when the timestamp jumps by more than ``gap_sec`` (the
+    countdown between rounds), goes backwards (a later session appended to the
+    same file), or the current trial already holds ``max_rows`` rows.
+    """
+
+    trials: List[RecordedTrial] = []
+    rows: List[List[float]] = []
+    start_time = 0.0
+    last_time: Optional[float] = None
+
+    def flush() -> None:
+        if rows:
+            trials.append(RecordedTrial(label, np.array(rows, dtype=np.float32), start_time))
+
+    for line in Path(file_path).read_text().splitlines():
+        features = parse_feature_line(line)
+        if features is None:
+            continue
+        try:
+            timestamp = float(line.split(",", 1)[0])
+        except ValueError:
+            continue
+        new_trial = (
+            last_time is None
+            or timestamp - last_time > gap_sec
+            or timestamp < last_time
+            or len(rows) >= max_rows
+        )
+        if new_trial:
+            flush()
+            rows = []
+            start_time = timestamp
+        rows.append(features)
+        last_time = timestamp
+    flush()
+    return trials
+
+
+def trial_grouped_split(
+    trials: Sequence[RecordedTrial],
+    *,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
+    seed: int = 42,
+) -> Tuple[List[RecordedTrial], List[RecordedTrial], List[RecordedTrial]]:
+    """Stratified split at trial level: every trial lands in exactly one set.
+
+    Each class keeps at least one test trial (and one validation trial when it
+    has three or more trials), so accuracy is always measured on unseen rounds.
+    """
+
+    rng = random.Random(seed)
+    by_label: Dict[int, List[RecordedTrial]] = {}
+    for trial in trials:
+        by_label.setdefault(trial.label, []).append(trial)
+    train: List[RecordedTrial] = []
+    val: List[RecordedTrial] = []
+    test: List[RecordedTrial] = []
+    for label in sorted(by_label):
+        items = list(by_label[label])
+        rng.shuffle(items)
+        count = len(items)
+        n_test = max(1, round(count * (1 - train_ratio - val_ratio))) if count >= 2 else 0
+        n_val = max(1, round(count * val_ratio)) if count >= 3 else 0
+        test.extend(items[:n_test])
+        val.extend(items[n_test : n_test + n_val])
+        train.extend(items[n_test + n_val :])
+    return train, val, test
+
+
+def trial_windows(
+    trials: Sequence[RecordedTrial],
+    *,
+    window_size: int = 30,
+    stride: int = 5,
+) -> List[Sample]:
+    """Mean+std windows that slide only inside one trial.
+
+    A trial shorter than ``window_size`` contributes one window over all of its
+    rows, provided it has at least half a window; shorter trials are skipped.
+    """
+
+    samples: List[Sample] = []
+    for trial in trials:
+        count = len(trial.rows)
+        if count < max(1, window_size // 2):
+            continue
+        size = min(window_size, count)
+        for start in range(0, count - size + 1, max(1, stride)):
+            samples.append((combine_feature_window(trial.rows[start : start + size]), trial.label))
+    return samples
+
+
+def significance_threshold(n: int, n_classes: int, alpha: float = 0.05) -> float:
+    """Smallest accuracy k/n with P(X >= k) <= alpha under chance (X ~ Bin(n, 1/n_classes)).
+
+    Accuracy at or above this value on ``n`` held-out trials is significantly
+    better than guessing at level ``alpha``.
+    """
+
+    if n <= 0 or n_classes < 2:
+        return 1.0
+    p = 1.0 / n_classes
+    log_p, log_q, log_n_fact = math.log(p), math.log(1 - p), math.lgamma(n + 1)
+    tail = 0.0
+    # accumulate P(X >= k) from the top down; stop before it exceeds alpha
+    for k in range(n, -1, -1):
+        log_term = log_n_fact - math.lgamma(k + 1) - math.lgamma(n - k + 1) + k * log_p + (n - k) * log_q
+        next_tail = tail + math.exp(log_term)
+        if next_tail > alpha:
+            return min(1.0, (k + 1) / n)
+        tail = next_tail
+    return 0.0
+
+
+def feature_stats(samples: Sequence[Sample]) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-feature mean/std of the raw training vectors (what ModelPredictor uses)."""
+
+    matrix = np.stack([features for features, _ in samples], axis=0).astype(np.float32)
+    return matrix.mean(axis=0), matrix.std(axis=0)
 
 
 class FeatureDataset(torch.utils.data.Dataset):

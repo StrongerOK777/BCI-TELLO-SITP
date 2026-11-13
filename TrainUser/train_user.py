@@ -26,11 +26,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from sklearn.preprocessing import RobustScaler
+from bin.training import feature_stats, load_trials, significance_threshold, trial_grouped_split, trial_windows
 # 训练过程统计与状态控制
 loss_values = [] # 存储训练过程中的损失值
 action = 3        # 当前动作状态：0-左，1-右，2-休息，3-倒计时/准备
 displaytime = 30  # 训练循环次数（轮回次数）
+WINDOW_SIZE = 30  # 训练窗口行数，与 brain_control.py 在线窗口（30 组 × 0.1s）一致
 stop_event = threading.Event()      # 用于通知采集线程停止
 record_event = threading.Event()    # 采集窗口开关（倒计时不采集，动作窗口采集）
 batch_done_event = threading.Event()# 采满一批样本后通知 UI 进入下一轮
@@ -265,51 +266,6 @@ thread2.join()
 print("\n--- Data collection finished. Starting model training ---")
 pygame.quit()
 
-def parse_feature_line(line):
-    # 解析单行特征并扩展为 14 维（含派生特征）
-    parts = line.strip().split(',')
-    if len(parts) != 2:
-        return None
-    raw = parts[1].split('|')
-    if len(raw) != 12:
-        return None
-    values = list(map(float, raw))
-    (attention, meditation, delta, theta, low_alpha, high_alpha,
-     low_beta, high_beta, low_gamma, mid_gamma, poor_signal, blink_strength) = values
-    if poor_signal > 20:
-        return None
-    beta = low_beta + high_beta
-    alpha = low_alpha + high_alpha
-    theta_safe = theta if theta != 0 else 1e-6
-    beta_theta_ratio = beta / theta_safe
-    alpha_theta_ratio = alpha / theta_safe
-    engagement = beta / (alpha + 1e-6)
-    features = [
-        attention, meditation, delta, theta, low_alpha, high_alpha,
-        low_beta, high_beta, low_gamma, mid_gamma, blink_strength,
-        beta_theta_ratio, alpha_theta_ratio, engagement
-    ]
-    return features
-
-
-def load_windowed_samples(file_path, label, window_size=20, stride=1):
-    # 滑动窗口生成样本：窗口内均值+方差拼接
-    with open(file_path, 'r') as file:
-        lines = file.readlines()
-    samples = []
-    features_list = [parse_feature_line(line) for line in lines]
-    features_list = [f for f in features_list if f is not None]
-    if len(features_list) < window_size:
-        return samples
-    for i in range(0, len(features_list) - window_size + 1, stride):
-        window = np.array(features_list[i:i + window_size], dtype=np.float32)
-        mean_feat = window.mean(axis=0)
-        std_feat = window.std(axis=0)
-        combined = np.concatenate([mean_feat, std_feat], axis=0)
-        samples.append((combined, label))
-    return samples
-
-
 class FeatureDataset(torch.utils.data.Dataset):
     def __init__(self, samples, mean, std, augment=False):
         self.samples = samples
@@ -339,11 +295,13 @@ file_paths = [
 ]
 labels = [0, 1, 2]
 
-all_samples = []
+# 按采集轮次切分试次：同一轮的窗口只会出现在训练/验证/测试中的一个集合里
+all_trials = []
 for file_path, label in zip(file_paths, labels):
-    all_samples.extend(load_windowed_samples(file_path, label, window_size=5, stride=1))
+    if file_path.exists():
+        all_trials.extend(load_trials(file_path, label, max_rows=WINDOW_SIZE))
 
-if len(all_samples) == 0:
+if len(all_trials) == 0:
     raise RuntimeError("没有可用的训练样本，请先采集数据。")
 
 # 模型定义（全连接+BN+Dropout）
@@ -518,36 +476,20 @@ torch.manual_seed(random_state)
 np.random.seed(random_state)
 random.seed(random_state)
 
-def stratified_split(samples, train_ratio=0.8, val_ratio=0.1):
-    """分层划分，避免类别分布偏移"""
-    by_label = {}
-    for features, label in samples:
-        by_label.setdefault(label, []).append((features, label))
-    
-    train_samples, val_samples, test_samples = [], [], []
-    for label, items in by_label.items():
-        random.shuffle(items)
-        n = len(items)
-        n_train = int(n * train_ratio)
-        n_val = int(n * val_ratio)
-        train_samples.extend(items[:n_train])
-        val_samples.extend(items[n_train:n_train + n_val])
-        test_samples.extend(items[n_train + n_val:])
-    
-    return train_samples, val_samples, test_samples
-
-
 # ==================== 4. 数据准备与标准化 ====================
-train_samples, val_samples, test_samples = stratified_split(all_samples, train_ratio=0.8, val_ratio=0.1)
+train_trials, val_trials, test_trials = trial_grouped_split(all_trials, seed=random_state)
+train_samples = trial_windows(train_trials, window_size=WINDOW_SIZE)
+val_samples = trial_windows(val_trials, window_size=WINDOW_SIZE)
+test_samples = trial_windows(test_trials, window_size=WINDOW_SIZE)
+if not train_samples or not val_samples or not test_samples:
+    raise RuntimeError("试次数量不足，无法划分训练/验证/测试集，请多采集几轮数据。")
+n_test_trials = len(test_trials)
+chance_threshold = significance_threshold(n_test_trials, len(labels))
+print(f"试次划分（按轮次分组）：训练 {len(train_trials)} / 验证 {len(val_trials)} / 测试 {n_test_trials}")
 
-# 使用RobustScaler进行标准化
+# 在原始训练特征上计算均值和标准差：训练与 ModelPredictor 推理使用同一套标准化
 train_features = np.stack([s[0] for s in train_samples], axis=0)
-scaler = RobustScaler()
-train_features_scaled = scaler.fit_transform(train_features)
-
-# 计算标准化后的均值和标准差
-feature_mean = train_features_scaled.mean(axis=0)
-feature_std = train_features_scaled.std(axis=0)
+feature_mean, feature_std = feature_stats(train_samples)
 
 # 创建数据集
 train_dataset = FeatureDataset(train_samples, mean=feature_mean, std=feature_std, augment=True)
@@ -679,7 +621,6 @@ def train_single_model(model_name, ModelClass, model_id, epochs=300, patience=40
                 "feature_mean": feature_mean,
                 "feature_std": feature_std,
                 "input_dim": input_dim,
-                "scaler": scaler,
                 "best_val_loss": best_val_loss,
                 "best_epoch": best_epoch
             }
@@ -823,7 +764,6 @@ if save_models:
             'feature_mean': feature_mean,
             'feature_std': feature_std,
             'input_dim': train_features.shape[1],
-            'scaler': scaler,
             'model_name': model_name
         }, filename)
     print("✓ All models saved successfully!")
@@ -1122,7 +1062,6 @@ for epoch in range(distillation_epochs):
             'feature_mean': feature_mean,
             'feature_std': feature_std,
             'input_dim': input_dim,
-            'scaler': scaler,
             'best_val_loss': best_val_loss_final,
             'best_epoch': best_epoch_final,
             'temperature': temperature,
@@ -1192,6 +1131,12 @@ final_strict_accuracy = strict_correct_final / test_total
 print(f"Final Unified Model Performance:")
 print(f"  - Test Accuracy (strict):  {final_strict_accuracy * 100:.2f}%")
 print(f"  - Test Accuracy (relaxed): {final_accuracy * 100:.2f}%")
+model_significant = final_strict_accuracy >= chance_threshold
+print(f"  - 测试试次：{n_test_trials}，显著优于随机猜测需 ≥ {chance_threshold * 100:.1f}%（p<0.05）")
+if n_test_trials < 15:
+    print("  ⚠ 测试试次少于 15 个，准确率波动很大，建议每类至少采集 20 轮后再判断")
+if not model_significant:
+    print("  ⚠ 模型未显著优于随机猜测，转弯模式建议使用 --turning-source rule")
 
 print(f"\nComparison with Ensemble:")
 print(f"  - Ensemble Accuracy (strict):  {strict_accuracy * 100:.2f}%")
@@ -1211,7 +1156,6 @@ torch.save({
     'feature_mean': feature_mean,
     'feature_std': feature_std,
     'input_dim': input_dim,
-    'scaler': scaler,
     'best_val_loss': best_val_loss_final,
     'best_epoch': best_epoch_final,
     'test_accuracy_strict': final_strict_accuracy,
@@ -1219,7 +1163,12 @@ torch.save({
     'temperature': temperature,
     'alpha': alpha,
     'model_architecture': 'FinalUnifiedModel',
-    'training_method': 'Knowledge Distillation from 5 Teacher Models'
+    'training_method': 'Knowledge Distillation from 5 Teacher Models',
+    'split': 'trial_grouped',
+    'window_size': WINDOW_SIZE,
+    'n_test_trials': n_test_trials,
+    'significance_threshold': chance_threshold,
+    'significant': bool(model_significant),
 }, final_model_path)
 
 print(f"\n{'='*60}")

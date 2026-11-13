@@ -92,8 +92,14 @@ class TelloDroneController:
         self._send_rc(0, 0, 0, self.yaw_speed)
 
     def _send_rc(self, lr: int, fb: int, ud: int, yv: int) -> None:
-        self._require_drone().send_rc_control(lr, fb, ud, yv)
-        time.sleep(self.action_sleep)
+        # Tello keeps flying at the last rc velocity until told otherwise, so
+        # every move is a bounded step: fly for action_sleep, then hover.
+        drone = self._require_drone()
+        drone.send_rc_control(lr, fb, ud, yv)
+        try:
+            time.sleep(self.action_sleep)
+        finally:
+            drone.send_rc_control(0, 0, 0, 0)
 
     def _require_drone(self) -> Any:
         if self.drone is None:
